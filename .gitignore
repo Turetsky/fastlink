@@ -1,0 +1,31 @@
+# Workspace dirs that are not part of FastLink
+/fast-ext-dad/
+/fastlink-cloud-mcp/
+/.claude/
+
+# Workspace-local notes and docs
+/CLAUDE.md
+/notes.txt
+/CHANGES-*.txt
+
+# Node
+node_modules/
+npm-debug.log*
+
+# Built artifacts
+*.mcpb
+
+# Secrets / local env
+.env
+.env.*
+token.json
+credentials.json
+fastlink-secrets.txt
+.cloudflared/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+*.bak
+*.bak.*

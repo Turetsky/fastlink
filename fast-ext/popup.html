@@ -1,0 +1,50 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  :root { color-scheme: dark; }
+  html, body {
+    margin: 0;
+    background: #14161c;
+    color: #e7e9ee;
+    font: 12px/1.2 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  }
+  body {
+    padding: 8px 10px;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    white-space: nowrap;
+  }
+  .title { font-weight: 600; letter-spacing: 0.2px; }
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 7px;
+    background: linear-gradient(180deg, rgba(92,200,255,0.25), rgba(92,200,255,0.15));
+    border: 1px solid rgba(92,200,255,0.4);
+    color: #cfe9ff;
+    border-radius: 999px;
+    font-size: 10px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.3px;
+  }
+  .pill::before {
+    content: '';
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: #5cc8ff;
+    box-shadow: 0 0 5px #5cc8ff;
+  }
+</style>
+</head>
+<body>
+  <span class="title">FastLink</span>
+  <span class="pill" id="version">v—</span>
+<script src="popup.js"></script>
+</body>
+</html>

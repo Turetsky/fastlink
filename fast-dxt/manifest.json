@@ -1,0 +1,142 @@
+{
+  "dxt_version": "0.1",
+  "name": "fastlink",
+  "display_name": "FastLink",
+  "version": "1.1.0",
+  "description": "FastLink — page snapshots, clicks, console/network capture, and batch automation via a paired Chrome extension",
+  "icon": "icons/icon-256.png",
+  "author": {
+    "name": "Yaakov"
+  },
+  "tools": [
+    {
+      "name": "fast_status",
+      "description": "Report whether the Chrome extension is connected"
+    },
+    {
+      "name": "fast_snapshot",
+      "description": "Get a fast snapshot of clickable elements on the active Chrome tab"
+    },
+    {
+      "name": "fast_text",
+      "description": "Read innerText/outerHTML from the active tab (CSP-safe, works on claude.ai)"
+    },
+    {
+      "name": "fast_screenshot",
+      "description": "Capture active tab as PNG, returns file path"
+    },
+    {
+      "name": "fast_click",
+      "description": "Click an element by text/label/aria-label"
+    },
+    {
+      "name": "fast_fill",
+      "description": "Fill input/textarea/contenteditable by label/placeholder/name"
+    },
+    {
+      "name": "fast_select_option",
+      "description": "Pick an option from a dropdown/combobox (handles react-select, native select, ARIA)"
+    },
+    {
+      "name": "fast_key_press",
+      "description": "Press a single key (Enter, Escape, Tab, etc.)"
+    },
+    {
+      "name": "fast_scroll",
+      "description": "Scroll the active tab \u2014 auto-detects nested scrollers like the claude.ai chat"
+    },
+    {
+      "name": "fast_tab",
+      "description": "Open a URL in a new Chrome tab"
+    },
+    {
+      "name": "fast_nav",
+      "description": "Navigate the active tab to a URL"
+    },
+    {
+      "name": "fast_list",
+      "description": "List all open tabs in the current window"
+    },
+    {
+      "name": "fast_switch",
+      "description": "Switch focus to a tab by id or URL/title substring"
+    },
+    {
+      "name": "fast_close",
+      "description": "Close a Chrome tab by id or URL/title match"
+    },
+    {
+      "name": "fast_wait",
+      "description": "Wait until an element with the given text appears"
+    },
+    {
+      "name": "fast_evaluate",
+      "description": "Run arbitrary JS in the active tab (blocked on CSP-locked pages \u2014 use fast_text instead)"
+    },
+    {
+      "name": "fast_batch",
+      "description": "Run multiple Fast Browser actions in sequence with one tool call"
+    },
+    {
+      "name": "fast_console",
+      "description": "Read recent console messages (log/warn/error) from the active tab"
+    },
+    {
+      "name": "fast_network",
+      "description": "List recent network requests from the active tab"
+    },
+    {
+      "name": "fast_hover",
+      "description": "Hover over an element to trigger tooltips/hover menus"
+    },
+    {
+      "name": "fast_drag",
+      "description": "Drag an element to another element or to coordinates"
+    },
+    {
+      "name": "fast_fill_form",
+      "description": "Fill multiple form fields in one call (declarative {label: value} map)"
+    },
+    {
+      "name": "fast_network_replay",
+      "description": "Re-fire a captured request from the page's origin (auto-includes cookies/auth)"
+    },
+    {
+      "name": "fast_macro_save",
+      "description": "Save a named multi-step recipe for replay later"
+    },
+    {
+      "name": "fast_macro_list",
+      "description": "List all saved macros"
+    },
+    {
+      "name": "fast_macro_run",
+      "description": "Run a saved macro by name"
+    },
+    {
+      "name": "fast_macro_delete",
+      "description": "Delete a saved macro"
+    }
+  ],
+  "server": {
+    "type": "node",
+    "entry_point": "server/index.js",
+    "mcp_config": {
+      "command": "node",
+      "args": [
+        "${__dirname}/server/index.js"
+      ]
+    }
+  },
+  "compatibility": {
+    "claude_desktop": ">=0.10.0",
+    "platforms": [
+      "win32",
+      "darwin",
+      "linux"
+    ],
+    "runtimes": {
+      "node": ">=18.0.0"
+    }
+  }
+}
