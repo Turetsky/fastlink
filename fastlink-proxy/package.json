@@ -1,0 +1,9 @@
+{
+  "name": "fastlink-proxy",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "proxy.js",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  }
+}
