@@ -17665,10 +17665,10 @@ var StreamableHTTPClientTransport = class {
 };
 
 // proxy.js
-var REMOTE_URL = process.env.FAST_BROWSER_URL || "https://fastlink.ytx.app/mcp";
-var TOKEN = process.env.FAST_BROWSER_TOKEN;
+var REMOTE_URL = process.env.FASTLINK_URL || "https://fastlink.ytx.app/mcp";
+var TOKEN = process.env.FASTLINK_TOKEN;
 if (!TOKEN) {
-  process.stderr.write("[fastlink-proxy] FAST_BROWSER_TOKEN env var is required\n");
+  process.stderr.write("[fastlink-proxy] FASTLINK_TOKEN env var is required\n");
   process.exit(1);
 }
 var log = (m) => process.stderr.write(`[fastlink-proxy] ${m}

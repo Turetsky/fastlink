@@ -8,10 +8,10 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 
-const REMOTE_URL = process.env.FAST_BROWSER_URL || 'https://fastlink.ytx.app/mcp';
-const TOKEN = process.env.FAST_BROWSER_TOKEN;
+const REMOTE_URL = process.env.FASTLINK_URL || 'https://fastlink.ytx.app/mcp';
+const TOKEN = process.env.FASTLINK_TOKEN;
 if (!TOKEN) {
-  process.stderr.write('[fastlink-proxy] FAST_BROWSER_TOKEN env var is required\n');
+  process.stderr.write('[fastlink-proxy] FASTLINK_TOKEN env var is required\n');
   process.exit(1);
 }
 
