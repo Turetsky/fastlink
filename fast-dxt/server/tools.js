@@ -174,7 +174,7 @@ export const TOOLS = [
   },
   {
     name: 'fast_batch',
-    description: 'Run multiple Fast Browser actions in sequence with ONE tool call. Each action runs only if the previous succeeded (set continueOnError to override). Cuts LLM round-trips when you know the full sequence in advance (e.g. navigate → wait → fill → click).',
+    description: 'Run multiple FastLink actions in sequence with ONE tool call. Each action runs only if the previous succeeded (set continueOnError to override). Cuts LLM round-trips when you know the full sequence in advance (e.g. navigate → wait → fill → click).',
     inputSchema: {
       type: 'object',
       properties: {

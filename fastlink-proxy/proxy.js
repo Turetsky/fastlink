@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Stdio MCP proxy → remote HTTP MCP at FAST_BROWSER_URL with Bearer auth.
+// Stdio MCP proxy → remote HTTP MCP at FASTLINK URL with Bearer auth.
 // Lets cloud Claude Code (which spawns stdio MCPs but can't supply auth headers
 // to remote HTTP MCPs) reach our authenticated tunnel.
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
@@ -11,14 +11,14 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 const REMOTE_URL = process.env.FAST_BROWSER_URL || 'https://fastlink.ytx.app/mcp';
 const TOKEN = process.env.FAST_BROWSER_TOKEN;
 if (!TOKEN) {
-  process.stderr.write('[fast-browser-proxy] FAST_BROWSER_TOKEN env var is required\n');
+  process.stderr.write('[fastlink-proxy] FAST_BROWSER_TOKEN env var is required\n');
   process.exit(1);
 }
 
-const log = (m) => process.stderr.write(`[fast-browser-proxy] ${m}\n`);
+const log = (m) => process.stderr.write(`[fastlink-proxy] ${m}\n`);
 
 const client = new Client(
-  { name: 'fast-browser-proxy', version: '0.1.0' },
+  { name: 'fastlink-proxy', version: '0.1.0' },
   { capabilities: {} }
 );
 
@@ -30,7 +30,7 @@ await client.connect(transport);
 log(`connected to remote ${REMOTE_URL}`);
 
 const server = new Server(
-  { name: 'fast-browser', version: '0.1.0' },
+  { name: 'fastlink', version: '0.1.0' },
   { capabilities: { tools: {} } }
 );
 

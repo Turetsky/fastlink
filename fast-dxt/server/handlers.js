@@ -85,7 +85,7 @@ async function runBatch(args) {
 
 function saveScreenshot(result) {
   const ext = (result.format || 'png').toLowerCase();
-  const path = join(tmpdir(), `fast-browser-screenshot-${Date.now()}.${ext}`);
+  const path = join(tmpdir(), `fastlink-screenshot-${Date.now()}.${ext}`);
   const base64 = result.dataUrl.replace(/^data:image\/\w+;base64,/, '');
   const bytes = Buffer.from(base64, 'base64');
   writeFileSync(path, bytes);
@@ -93,10 +93,10 @@ function saveScreenshot(result) {
   return { path, format: ext, bytes: bytes.length };
 }
 
-// Delete fast-browser-screenshot-* files older than 24h. Cheap readdir on
+// Delete fastlink-screenshot-* files older than 24h. Cheap readdir on
 // /tmp; runs once at startup and again after each save.
 const SCREENSHOT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
-const SCREENSHOT_PREFIX = 'fast-browser-screenshot-';
+const SCREENSHOT_PREFIX = 'fastlink-screenshot-';
 export function sweepOldScreenshots() {
   const dir = tmpdir();
   const cutoff = Date.now() - SCREENSHOT_MAX_AGE_MS;

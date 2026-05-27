@@ -17668,13 +17668,13 @@ var StreamableHTTPClientTransport = class {
 var REMOTE_URL = process.env.FAST_BROWSER_URL || "https://fastlink.ytx.app/mcp";
 var TOKEN = process.env.FAST_BROWSER_TOKEN;
 if (!TOKEN) {
-  process.stderr.write("[fast-browser-proxy] FAST_BROWSER_TOKEN env var is required\n");
+  process.stderr.write("[fastlink-proxy] FAST_BROWSER_TOKEN env var is required\n");
   process.exit(1);
 }
-var log = (m) => process.stderr.write(`[fast-browser-proxy] ${m}
+var log = (m) => process.stderr.write(`[fastlink-proxy] ${m}
 `);
 var client = new Client(
-  { name: "fast-browser-proxy", version: "0.1.0" },
+  { name: "fastlink-proxy", version: "0.1.0" },
   { capabilities: {} }
 );
 var transport = new StreamableHTTPClientTransport(new URL(REMOTE_URL), {
@@ -17683,7 +17683,7 @@ var transport = new StreamableHTTPClientTransport(new URL(REMOTE_URL), {
 await client.connect(transport);
 log(`connected to remote ${REMOTE_URL}`);
 var server = new Server(
-  { name: "fast-browser", version: "0.1.0" },
+  { name: "fastlink", version: "0.1.0" },
   { capabilities: { tools: {} } }
 );
 server.setRequestHandler(ListToolsRequestSchema, async () => {

@@ -75,7 +75,7 @@
     },
     {
       "name": "fast_batch",
-      "description": "Run multiple Fast Browser actions in sequence with one tool call"
+      "description": "Run multiple FastLink actions in sequence with one tool call"
     },
     {
       "name": "fast_console",
