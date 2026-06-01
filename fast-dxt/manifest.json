@@ -2,7 +2,7 @@
   "dxt_version": "0.1",
   "name": "fastlink",
   "display_name": "FastLink",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "FastLink — page snapshots, clicks, console/network capture, and batch automation via a paired Chrome extension",
   "icon": "icons/icon-256.png",
   "author": {
@@ -10,112 +10,176 @@
   },
   "tools": [
     {
+      "name": "fast_scout",
+      "description": "PREFERRED way to understand and act on the active tab — use this instead of fast_snapshot in most cases."
+    },
+    {
+      "name": "fast_point",
+      "description": "VISION coordinate-grounding: locate on-screen target(s) NOT in the DOM (opaque/cross-origin iframes, canvas, custom widgets) by having a fast multimodal mode..."
+    },
+    {
+      "name": "fast_vision_capture",
+      "description": "Low-level: capture the visible tab for the vision tier — returns {dataUrl, imgW, imgH, dpr}, optionally cropped to a CSS-px region and upscaled (the crop-zoo..."
+    },
+    {
+      "name": "fast_point_som",
+      "description": "VISION locate via SET-OF-MARK (classification, not coordinate regression — typically most reliable for dense/iframe forms)."
+    },
+    {
+      "name": "fast_fill_vision",
+      "description": "VISION form-fill in ONE call: fills an entire form server-side, collapsing the per-field point→click→type loop (~15 round-trips) into a single tool call."
+    },
+    {
+      "name": "fast_do",
+      "description": "EXPERIMENTAL most-aggressive tier: give ONE plain-language INTENT and a whole form is filled/operated in a SINGLE call — a fast multimodal model (Gemini) doe..."
+    },
+    {
+      "name": "fast_locate",
+      "description": "Locate an element by racing the DOM and vision tiers concurrently; returns the fastest usable hit."
+    },
+    {
+      "name": "fast_annotate_boxes",
+      "description": "Low-level: capture the viewport and draw numbered red boxes at the given CSS-px boxes [{n,x,y,w,h}], returning {dataUrl,dpr}."
+    },
+    {
       "name": "fast_status",
-      "description": "Report whether the Chrome extension is connected"
+      "description": "Report whether the Chrome extension is connected to this MCP server, and connection diagnostics."
+    },
+    {
+      "name": "fast_prewarm",
+      "description": "Turn ON background pre-warming for the next ~60s."
     },
     {
       "name": "fast_snapshot",
-      "description": "Get a fast snapshot of clickable elements on the active Chrome tab"
-    },
-    {
-      "name": "fast_text",
-      "description": "Read innerText/outerHTML from the active tab (CSP-safe, works on claude.ai)"
-    },
-    {
-      "name": "fast_screenshot",
-      "description": "Capture active tab as PNG, returns file path"
+      "description": "Snapshot of the active Chrome tab."
     },
     {
       "name": "fast_click",
-      "description": "Click an element by text/label/aria-label"
+      "description": "Click an element matching text/label/aria-label/placeholder."
     },
     {
       "name": "fast_fill",
-      "description": "Fill input/textarea/contenteditable by label/placeholder/name"
-    },
-    {
-      "name": "fast_select_option",
-      "description": "Pick an option from a dropdown/combobox (handles react-select, native select, ARIA)"
-    },
-    {
-      "name": "fast_key_press",
-      "description": "Press a single key (Enter, Escape, Tab, etc.)"
-    },
-    {
-      "name": "fast_scroll",
-      "description": "Scroll the active tab \u2014 auto-detects nested scrollers like the claude.ai chat"
+      "description": "Fill input/textarea/contenteditable by label/placeholder/name."
     },
     {
       "name": "fast_tab",
-      "description": "Open a URL in a new Chrome tab"
+      "description": "Open a new Chrome tab at the given URL."
     },
     {
       "name": "fast_nav",
-      "description": "Navigate the active tab to a URL"
+      "description": "Navigate the active Chrome tab to a URL."
+    },
+    {
+      "name": "fast_reload",
+      "description": "Reload the active Chrome tab (bypassing cache) and wait for the load to finish."
     },
     {
       "name": "fast_list",
-      "description": "List all open tabs in the current window"
+      "description": "List all open tabs in the current Chrome window with id, url, title, and active state."
     },
     {
       "name": "fast_switch",
-      "description": "Switch focus to a tab by id or URL/title substring"
-    },
-    {
-      "name": "fast_close",
-      "description": "Close a Chrome tab by id or URL/title match"
+      "description": "Switch focus to a specific Chrome tab."
     },
     {
       "name": "fast_wait",
-      "description": "Wait until an element with the given text appears"
+      "description": "Wait for the page to reach a state."
     },
     {
       "name": "fast_evaluate",
-      "description": "Run arbitrary JS in the active tab (blocked on CSP-locked pages \u2014 use fast_text instead)"
+      "description": "Escape hatch: run arbitrary JavaScript in the active Chrome tab (MAIN world, full DOM access)."
+    },
+    {
+      "name": "fast_text",
+      "description": "Read text (or HTML) from the active Chrome tab."
+    },
+    {
+      "name": "fast_select_option",
+      "description": "Pick an option from a dropdown/combobox/select."
+    },
+    {
+      "name": "fast_screenshot",
+      "description": "Capture a screenshot of the active Chrome tab."
+    },
+    {
+      "name": "fast_marks",
+      "description": "Annotated screenshot: draws numbered boxes (the element's id) over visible interactive elements and returns the image + an id→center-coords map, for visually..."
+    },
+    {
+      "name": "fast_key_press",
+      "description": "Press a single key on the active tab."
+    },
+    {
+      "name": "fast_key",
+      "description": "Trusted keyboard chord via the CDP Input domain — fires REAL key events with modifiers, so shortcuts like Ctrl+A, Cmd+C, Cmd+V, Shift+Tab actually work (unli..."
+    },
+    {
+      "name": "fast_scroll",
+      "description": "Scroll the active tab."
+    },
+    {
+      "name": "fast_close",
+      "description": "Close a Chrome tab by id (from fast_list) or by URL/title substring match."
     },
     {
       "name": "fast_batch",
-      "description": "Run multiple FastLink actions in sequence with one tool call"
+      "description": "Run multiple FastLink actions in sequence with ONE tool call."
     },
     {
       "name": "fast_console",
-      "description": "Read recent console messages (log/warn/error) from the active tab"
+      "description": "Read recent console messages (log/warn/error/info) from the active Chrome tab."
     },
     {
       "name": "fast_network",
-      "description": "List recent network requests from the active tab"
+      "description": "List recent network requests from the active Chrome tab (URL, method, status, type, duration)."
     },
     {
       "name": "fast_hover",
-      "description": "Hover over an element to trigger tooltips/hover menus"
+      "description": "Hover over an element matching text/label/aria-label/placeholder."
     },
     {
       "name": "fast_drag",
-      "description": "Drag an element to another element or to coordinates"
+      "description": "Drag from one element to another (or to coordinates)."
     },
     {
       "name": "fast_fill_form",
-      "description": "Fill multiple form fields in one call (declarative {label: value} map)"
+      "description": "Fill multiple fields in one call (saves N round-trips for large forms)."
     },
     {
       "name": "fast_network_replay",
-      "description": "Re-fire a captured request from the page's origin (auto-includes cookies/auth)"
+      "description": "Re-fire a request from the active tab's page context, so the page's cookies/auth are sent automatically (no manual header copy)."
     },
     {
       "name": "fast_macro_save",
-      "description": "Save a named multi-step recipe for replay later"
+      "description": "Save a named multi-step recipe (e.g."
     },
     {
       "name": "fast_macro_list",
-      "description": "List all saved macros"
+      "description": "List all saved macros (name, step count, description, savedAt)."
     },
     {
       "name": "fast_macro_run",
-      "description": "Run a saved macro by name"
+      "description": "Run a previously saved macro by name."
     },
     {
       "name": "fast_macro_delete",
-      "description": "Delete a saved macro"
+      "description": "Delete a saved macro by name."
+    },
+    {
+      "name": "fast_click_xy",
+      "description": "Trusted click at a pixel via the CDP Input domain (a REAL mouse event, isTrusted:true) — unlike fast_click's injected JS, LWC/React widgets honor it and it c..."
+    },
+    {
+      "name": "fast_wheel",
+      "description": "Trusted mouse-wheel scroll at a point via the CDP Input domain — a REAL wheel event, so canvas/WebGL views and virtualized lists that ignore programmatic scr..."
+    },
+    {
+      "name": "fast_drag_xy",
+      "description": "Trusted drag via the CDP Input domain — real mousePressed → mouseMoved(s) → mouseReleased, so native HTML5 drag-and-drop, sliders, and sortable lists that ig..."
+    },
+    {
+      "name": "fast_type",
+      "description": "Trusted typing into whatever element currently has focus, via CDP Input.insertText — React/LWC accept it because it's a real input event (unlike setting .val..."
     }
   ],
   "server": {

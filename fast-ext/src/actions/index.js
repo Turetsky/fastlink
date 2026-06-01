@@ -3,13 +3,16 @@ import { takeScreenshot }  from './screenshot.js';
 import { pressKey }        from './key.js';
 import { getText }         from './text.js';
 import { evaluate }        from './evaluate.js';
+import { clickXY, typeText, pressKeyChord, wheelScroll, dragXY } from './input.js';
 import { readConsole }     from './console.js';
 import { readNetwork }     from './network.js';
 import { waitForNetworkIdle } from './waitIdle.js';
 import { saveMacro, listMacros, runMacro, deleteMacro } from './macros.js';
+import { captureMarks }    from './marks.js';
+import { visionCapture, annotateBoxes } from './vision.js';
 import { injectInTab }     from '../util.js';
 
-const TAB_ACTIONS  = new Set(['fast_tab', 'fast_nav', 'fast_list', 'fast_close', 'fast_switch']);
+const TAB_ACTIONS  = new Set(['fast_tab', 'fast_nav', 'fast_reload', 'fast_list', 'fast_close', 'fast_switch']);
 const PAGE_ACTIONS = new Set([
   'fast_snapshot', 'fast_click', 'fast_fill', 'fast_fill_form', 'fast_wait',
   'fast_select_option', 'fast_hover', 'fast_drag', 'fast_scroll',
@@ -61,9 +64,17 @@ export async function dispatchAction(action, args) {
 async function runOne(action, args) {
   if (TAB_ACTIONS.has(action))      return handleTabAction(action, args);
   if (action === 'fast_screenshot') return takeScreenshot(args);
+  if (action === 'fast_marks')      return captureMarks(args);
+  if (action === 'fast_vision_capture') return visionCapture(args);
+  if (action === 'fast_annotate_boxes') return annotateBoxes(args);
   if (action === 'fast_key_press')  return pressKey(args);
   if (action === 'fast_text')       return getText(args);
   if (action === 'fast_evaluate')   return evaluate(args);
+  if (action === 'fast_click_xy')   return clickXY(args);
+  if (action === 'fast_type')       return typeText(args);
+  if (action === 'fast_key')        return pressKeyChord(args);
+  if (action === 'fast_wheel')      return wheelScroll(args);
+  if (action === 'fast_drag_xy')    return dragXY(args);
   if (action === 'fast_console')    return readConsole(args);
   if (action === 'fast_network')    return readNetwork(args);
   if (action === 'fast_wait' && args?.networkIdle) return waitForNetworkIdle(args);

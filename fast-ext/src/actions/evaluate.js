@@ -1,6 +1,5 @@
 import { getInjectableTab, injectInTab } from '../util.js';
-
-const CDP_VERSION = '1.3';
+import { cdp } from './input.js';
 
 export async function evaluate({ fn, args }) {
   const got = await getInjectableTab();
@@ -15,13 +14,12 @@ export async function evaluate({ fn, args }) {
 }
 
 async function evaluateViaCDP(tabId, fnStr, userArgs) {
-  const target = { tabId };
-  let attached = false;
   try {
-    await chrome.debugger.attach(target, CDP_VERSION);
-    attached = true;
+    // Use the SHARED persistent CDP session (input.js cdp helper) — no per-call
+    // attach/detach, so the "debugging Chrome" banner doesn't toggle and the
+    // viewport doesn't shift between a screenshot and a subsequent click.
     const expr = `(async () => { const __fn = (${fnStr}); return await __fn(...${JSON.stringify(userArgs)}); })()`;
-    const res = await chrome.debugger.sendCommand(target, 'Runtime.evaluate', {
+    const res = await cdp(tabId, 'Runtime.evaluate', {
       expression: expr,
       awaitPromise: true,
       returnByValue: true,
@@ -34,11 +32,7 @@ async function evaluateViaCDP(tabId, fnStr, userArgs) {
     }
     return { ok: true, value: res?.result?.value ?? null };
   } catch {
-    return { ok: false };
-  } finally {
-    if (attached) {
-      try { await chrome.debugger.detach(target); } catch {}
-    }
+    return { ok: false }; // CDP unavailable → caller falls back to scripting
   }
 }
 

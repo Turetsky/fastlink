@@ -19,6 +19,17 @@ const clients = new Set();
 export const hasMcpClients = () => clients.size > 0;
 export const mcpClientCount = () => clients.size;
 
+// Push an unsolicited message (e.g. a page-load 'event' from the extension) to
+// every connected MCP server, which decides what to do with it (the scout
+// pre-warms on 'navigated'). Distinct from notifyExtensionOfClientCount, which
+// targets extensions.
+export function broadcastToMcp(msg) {
+  const payload = JSON.stringify(msg);
+  for (const ws of clients) {
+    if (ws.readyState === 1) { try { ws.send(payload); } catch {} }
+  }
+}
+
 // Push the current client count to every connected extension so both
 // installs' badges (yaakov/dad) reflect "0/1/2+ clients" — red/yellow/green.
 function notifyExtensionOfClientCount() {

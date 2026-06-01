@@ -17,6 +17,10 @@ const HEARTBEAT_DEAD_MS = 32_000;
 let ws = null;
 let connectingPromise = null;
 const pending = new Map();
+const eventHandlers = new Set();
+
+// Subscribe to unsolicited broker→server events (e.g. page-load 'navigated').
+export function onBrokerEvent(fn) { eventHandlers.add(fn); }
 
 // Surfaced through fast_status so the LLM can tell "just reconnected,
 // retry once" from "steady-state failure".
@@ -105,6 +109,10 @@ function wireSocket(socket) {
   socket.on('message', (data) => {
     let msg;
     try { msg = JSON.parse(data.toString()); } catch { return; }
+    if (msg.type === 'event') {
+      for (const h of eventHandlers) { try { h(msg); } catch {} }
+      return;
+    }
     const entry = pending.get(msg.id);
     if (!entry) return;
     pending.delete(msg.id);

@@ -102,6 +102,14 @@ function stopPingLoop() {
   if (pingTimer) { clearInterval(pingTimer); pingTimer = null; }
 }
 
+// Push an unsolicited event to the broker (→ MCP server), e.g. a page-load
+// signal so the scout can pre-warm its page map. No-op if the socket is down.
+export function sendEvent(payload) {
+  if (socket && socket.readyState === WebSocket.OPEN) {
+    try { socket.send(JSON.stringify({ type: 'event', installId: INSTALL_ID, ...payload })); } catch {}
+  }
+}
+
 // 0 clients → red, 1 → yellow, 2+ → green. Reflects MCP sessions reaching
 // the broker — independent of whether the extension itself is reachable
 // (close → red is forced separately).

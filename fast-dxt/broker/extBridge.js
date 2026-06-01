@@ -2,7 +2,7 @@ import { WebSocketServer } from 'ws';
 import { state } from './state.js';
 import { log, onFatalListenError } from './lifecycle.js';
 import { onExtensionResponse, failPendingForSocket } from './router.js';
-import { mcpClientCount } from './mcpBridge.js';
+import { mcpClientCount, broadcastToMcp } from './mcpBridge.js';
 import { attachHeartbeat, startHeartbeatLoop } from './heartbeat.js';
 
 // One port per install. Two extensions running side-by-side never collide
@@ -66,6 +66,12 @@ function startOne(defaultId, port) {
       }
       if (msg.ping) {
         if (installId) state.notePing(installId);
+        return;
+      }
+      // Unsolicited extension events (e.g. page-load) fan out to MCP servers,
+      // which decide what to do (the scout pre-warms on 'navigated').
+      if (msg.type === 'event') {
+        broadcastToMcp(msg);
         return;
       }
       onExtensionResponse(msg);

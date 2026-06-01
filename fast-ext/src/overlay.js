@@ -4,17 +4,29 @@
 // background, so nothing here ever blocks the action path.
 
 (() => {
-  if (window.__fastlinkOverlayInstalled) return;
+  // Re-injection (e.g. background re-injecting after an extension reload) must
+  // REBUILD, not no-op — the previous instance's chrome.runtime context is dead
+  // and its onMessage listener can never fire again. Tear down the old host so
+  // this fresh, live-context instance takes over.
+  if (window.__fastlinkOverlayInstalled) {
+    try { document.getElementById('__fastlink_overlay_host__')?.remove(); } catch {}
+    try { window.__fastlinkOverlayTeardown?.(); } catch {}
+  }
   window.__fastlinkOverlayInstalled = true;
 
   const HOST_ID = '__fastlink_overlay_host__';
   const MAX_ROWS = 8;
   const FADE_AFTER_MS = 4000;
   const REMOVE_AFTER_MS = 6000;
+  // Tear the whole panel off the page this long after the LAST tool finishes
+  // (no rows still running). The panel mounts lazily on the first tool, so this
+  // gives it a symmetric lifecycle: appear on first tool, vanish after the last.
+  const DISMISS_AFTER_MS = 5000;
 
   let host = null;
   let shadow = null;
   let listEl = null;
+  let dismissTimer = null;
   const rows = new Map(); // id -> { rowEl, args, timers }
 
   const ensureMounted = () => {
@@ -29,7 +41,7 @@
       .panel {
         font:12px/1.35 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
         color:#e7e9ee;
-        background:rgba(20,22,28,0.92);
+        background:rgba(20,22,28,0.72);
         backdrop-filter: blur(8px);
         -webkit-backdrop-filter: blur(8px);
         border:1px solid rgba(255,255,255,0.08);
@@ -85,6 +97,7 @@
   };
 
   const ensureRow = (id, action, args) => {
+    cancelDismiss();   // a fresh tool means we're active again — keep the panel up
     ensureMounted();
     if (rows.has(id)) return rows.get(id);
     // Trim oldest if at cap.
@@ -121,11 +134,82 @@
     }
     entry.timers.push(setTimeout(() => entry.rowEl.classList.add('fade'), FADE_AFTER_MS));
     entry.timers.push(setTimeout(() => { entry.rowEl.remove(); rows.delete(id); }, REMOVE_AFTER_MS));
+    // If that was the last tool still running, start the countdown to close the
+    // whole panel. A new tool (ensureRow → cancelDismiss) cancels it; otherwise
+    // the panel disappears DISMISS_AFTER_MS after this final tool.
+    if (!anyRunning()) scheduleDismiss();
   };
 
-  chrome.runtime.onMessage.addListener((msg) => {
+  const anyRunning = () => {
+    for (const e of rows.values()) if (e.rowEl.classList.contains('run')) return true;
+    return false;
+  };
+
+  const cancelDismiss = () => { if (dismissTimer) { clearTimeout(dismissTimer); dismissTimer = null; } };
+
+  // Remove the entire overlay host (header dot + list) and reset state so the
+  // NEXT tool run re-mounts a fresh panel via ensureMounted.
+  const scheduleDismiss = () => {
+    cancelDismiss();
+    dismissTimer = setTimeout(() => {
+      dismissTimer = null;
+      clearAll();
+      try { host?.remove(); } catch {}
+      host = shadow = listEl = null;
+    }, DISMISS_AFTER_MS);
+  };
+
+  const onMessage = (msg) => {
     if (!msg || msg.fastlink !== 'event') return;
     if (msg.phase === 'start') ensureRow(msg.id, msg.action, msg.args);
     else if (msg.phase === 'end') completeRow(msg.id, msg.ok, msg.error);
-  });
+  };
+  chrome.runtime.onMessage.addListener(onMessage);
+
+  // Wipe every row and cancel its fade/remove timers. Used on page transitions
+  // so nothing from a prior run survives.
+  const clearAll = () => {
+    for (const entry of rows.values()) {
+      entry.timers.forEach(clearTimeout);
+      try { entry.rowEl.remove(); } catch {}
+    }
+    rows.clear();
+  };
+
+  // bfcache trap: when this page is frozen into the back/forward cache, its rows
+  // and their pending setTimeout fade/remove handlers freeze with it. On restore
+  // the JS context resumes and those timers fire — so a stale run's tools appear
+  // and fade out one-by-one on a page that isn't being driven at all. Clear on
+  // the way out (pagehide) and on bfcache restore (pageshow.persisted).
+  const onPageHide = () => clearAll();
+  const onPageShow = (e) => { if (e.persisted) clearAll(); };
+  window.addEventListener('pagehide', onPageHide);
+  window.addEventListener('pageshow', onPageShow);
+
+  // Self-heal: when the extension is reloaded, this content script is orphaned —
+  // chrome.runtime.id starts throwing "Extension context invalidated" and no new
+  // tool events can arrive. Detect that and show a one-time "reload tab" hint so
+  // the panel never silently freezes on a stale row. Stop the watcher after.
+  const ctxWatch = setInterval(() => {
+    let alive = true;
+    try { alive = !!chrome.runtime?.id; } catch { alive = false; }
+    if (alive) return;
+    clearInterval(ctxWatch);
+    try {
+      ensureMounted();
+      const note = document.createElement('div');
+      note.className = 'empty';
+      note.textContent = '↻ extension reloaded — refresh this tab to resume';
+      listEl.appendChild(note);
+    } catch {}
+  }, 1500);
+
+  // Allow a future re-injection to cleanly replace this instance.
+  window.__fastlinkOverlayTeardown = () => {
+    try { cancelDismiss(); } catch {}
+    try { clearInterval(ctxWatch); } catch {}
+    try { chrome.runtime.onMessage.removeListener(onMessage); } catch {}
+    try { window.removeEventListener('pagehide', onPageHide); } catch {}
+    try { window.removeEventListener('pageshow', onPageShow); } catch {}
+  };
 })();
