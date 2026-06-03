@@ -12,8 +12,49 @@
 //      navigation so it's already warm by the time Claude states intent.
 //   2. overlayIntent(map)   — map the intent onto the cached page map. Tiny,
 //      fast, the only call on the critical path once the page map is warm.
+import { request as httpsRequest } from 'https';
 import { SCOUT_ENABLED, GEMINI_API_KEY, GEMINI_MODEL } from './config.js';
 import { log } from './log.js';
+
+// POST JSON via Node's built-in https module instead of the global fetch.
+// The MCP server can run inside Claude Desktop as an Electron UtilityProcess,
+// where the global fetch is bound to a network session that isn't initialized
+// for utility processes and throws a bare "fetch failed". Node's https module
+// uses core networking and behaves identically under plain Node and Electron.
+// Resolves with the parsed JSON body; rejects on non-2xx with a trimmed body
+// (same error shape callers relied on before).
+function httpsPostJson(url, headers, bodyObj) {
+  const payload = JSON.stringify(bodyObj);
+  return new Promise((resolve, reject) => {
+    const u = new URL(url);
+    const req = httpsRequest(
+      {
+        method: 'POST',
+        hostname: u.hostname,
+        path: u.pathname + u.search,
+        port: u.port || 443,
+        headers: { ...headers, 'Content-Length': Buffer.byteLength(payload) },
+      },
+      (res) => {
+        let data = '';
+        res.setEncoding('utf8');
+        res.on('data', (c) => { data += c; });
+        res.on('end', () => {
+          const status = res.statusCode || 0;
+          if (status < 200 || status >= 300) {
+            reject(new Error(`scout gemini ${status}: ${data.slice(0, 300)}`));
+            return;
+          }
+          try { resolve(JSON.parse(data)); }
+          catch (e) { reject(new Error(`scout gemini bad JSON: ${e.message}`)); }
+        });
+      },
+    );
+    req.on('error', reject);
+    req.write(payload);
+    req.end();
+  });
+}
 
 const pageMapCache = new Map(); // url -> { hash, map }
 const visualMapCache = new Map(); // url -> { hash, map } — VISION pre-warm
@@ -273,16 +314,11 @@ async function callModelParts({ system, parts, maxTokens }) {
     },
   };
   if (system) body.systemInstruction = { parts: [{ text: system }] };
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'x-goog-api-key': GEMINI_API_KEY },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) {
-    const errBody = await res.text().catch(() => '');
-    throw new Error(`scout gemini ${res.status}: ${errBody.slice(0, 300)}`);
-  }
-  const data = await res.json();
+  const data = await httpsPostJson(
+    url,
+    { 'Content-Type': 'application/json', 'x-goog-api-key': GEMINI_API_KEY },
+    body,
+  );
   const content = (data?.candidates?.[0]?.content?.parts || []).map((p) => p.text || '').join('') || '{}';
   return safeJson(content);
 }
