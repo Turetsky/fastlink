@@ -1,12 +1,15 @@
 import { readFileSync } from 'fs';
+import { homedir } from 'os';
+import { join } from 'path';
 
 // Load a KEY=VALUE secrets file into process.env (without overriding existing
 // env). Lets the scout pick up GEMINI_API_KEY / OPENROUTER_API_KEY from a file
-// outside the repo. Default path is the user's fastlink-secrets.txt; override
-// with FASTLINK_SECRETS_FILE. Missing file is a silent no-op.
+// outside the repo. Default path is fastlink-secrets.txt in the user's home dir
+// (portable across Linux/macOS/Windows); override with FASTLINK_SECRETS_FILE.
+// Missing file is a silent no-op.
 (function loadSecrets() {
   const path = process.env.FASTLINK_SECRETS_FILE
-    || '/mnt/c/Users/yjtur/Downloads/fastlink-secrets.txt';
+    || join(homedir(), 'fastlink-secrets.txt');
   let raw;
   try { raw = readFileSync(path, 'utf8'); } catch { return; }
   for (const line of raw.split(/\r?\n/)) {

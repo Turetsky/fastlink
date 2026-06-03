@@ -152,5 +152,14 @@ function failAllPending(reason) {
 
 function spawnBroker() {
   log('spawning broker...');
-  spawn(process.execPath, [BROKER_ENTRY], { detached: true, stdio: 'ignore' }).unref();
+  // When running under Claude Desktop's built-in Node, process.execPath is the
+  // Electron app (Claude.exe), not a standalone node. Spawning it with a script
+  // path as an argument makes Electron treat it as a file-open / second-instance
+  // event (the "Attach index.js to this session?" popup). Forcing
+  // ELECTRON_RUN_AS_NODE=1 makes the same binary run as plain Node instead.
+  spawn(process.execPath, [BROKER_ENTRY], {
+    detached: true,
+    stdio: 'ignore',
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+  }).unref();
 }

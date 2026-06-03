@@ -1,6 +1,8 @@
 import { writeFileSync, unlinkSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 
-const PID_FILE = '/tmp/fastlink-broker.pid';
+const PID_FILE = join(tmpdir(), 'fastlink-broker.pid');
 const IDLE_MS = 60_000;
 const IDLE_POLL_MS = 5_000;
 
