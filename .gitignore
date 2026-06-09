@@ -3,14 +3,16 @@
 /fastlink-cloud-mcp/
 /.claude/
 
-# Workspace-local notes and docs
+# Workspace-local notes and docs (session logs, feedback transcripts)
 /CLAUDE.md
-/notes.txt
-/CHANGES-*.txt
+/notes/
 
 # Node
 node_modules/
 npm-debug.log*
+
+# Wrangler local state (Cloudflare CLI cache/tmp)
+.wrangler/
 
 # Built artifacts
 *.mcpb
@@ -22,6 +24,13 @@ token.json
 credentials.json
 fastlink-secrets.txt
 .cloudflared/
+
+# Chrome extension signing key (pins the stable extension ID — KEEP PRIVATE)
+fastlink-extension-signing-key.pem
+fastlink-extension-key.b64.txt
+
+# Extension build output
+fast-ext/dist/
 
 # OS / editor
 .DS_Store

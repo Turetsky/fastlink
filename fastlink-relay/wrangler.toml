@@ -1,0 +1,153 @@
+# wrangler.toml — FastLink multi-tenant relay
+# Worker entrypoint exposes the OAuth-protected /mcp endpoint to claude.ai and
+# routes authenticated WebSocket upgrades to a per-user Durable Object
+# (UserRelay) that bridges to the user's paired Chrome extension.
+# Bindings match SPEC.md §8 (the interface contract) exactly.
+#
+# OWNER ACTION before first deploy: fill the two placeholder IDs marked
+# `REPLACE_ME` below (D1 database_id, KV namespace id) and set the secrets in
+# DEPLOY.md §4. See DEPLOY.md for the `wrangler ... create` commands that print
+# the IDs.
+
+name = "fastlink-relay"
+main = "src/index.js"
+
+# ≥ 2026-04-07 for web_socket_auto_reply_to_close (and current DO + hibernation
+# behavior used by userRelay.js setWebSocketAutoResponse). Keep a date you've
+# tested against.
+compatibility_date = "2026-04-07"
+
+# Required: oauth's auth.js/db.js path uses Node-compat surface. (The OAuth
+# provider itself uses Web Crypto; nodejs_compat is enabled per SPEC §8.)
+compatibility_flags = ["nodejs_compat"]
+
+# ---------------------------------------------------------------------------
+# Custom domain: serve the whole Worker at relay.ytx.app (zone ytx.app is on
+# this account). custom_domain=true makes Cloudflare auto-create the DNS record
+# + managed TLS cert on `wrangler deploy` — no manual DNS/route setup needed.
+# This hostname is what claude.ai's connector and the OAuth redirect base use;
+# it must equal RELAY_BASE below (minus scheme).
+# ---------------------------------------------------------------------------
+[[routes]]
+pattern = "relay.ytx.app"
+custom_domain = true
+
+# ---------------------------------------------------------------------------
+# Durable Object: ONE instance per user, keyed by the verified OAuth subject.
+# relay-core exports `UserRelay` from src/userRelay.js, re-exported from
+# src/index.js (Workers requires DO classes be exported from the main module).
+# The Worker derives the DO id via env.USER_RELAY.idFromName(userId) where
+# userId comes from the verified token grant — never a request param
+# (isolation boundary; see SAFETY.md §6 / SPEC §1).
+# ---------------------------------------------------------------------------
+[[durable_objects.bindings]]
+name = "USER_RELAY"
+class_name = "UserRelay"
+
+# New DO namespaces on current Cloudflare must be SQLite-backed; Hibernation
+# works with SQLite-backed classes. v1 keeps WS + pending map in memory.
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["UserRelay"]
+
+# ---------------------------------------------------------------------------
+# D1: relational store for identity / pairing / consent / audit (owned by
+# `oauth`: db.js, auth.js, migrations/0001_init.sql). Binding name MUST be DB.
+# OWNER: run `npm run d1:create`, paste the printed database_id below.
+# ---------------------------------------------------------------------------
+[[d1_databases]]
+binding = "DB"
+database_name = "fastlink-relay"
+database_id = "efbf60f5-975b-44c2-8898-91efdf8f450a"   # from: wrangler d1 create fastlink-relay
+migrations_dir = "migrations"
+
+# ---------------------------------------------------------------------------
+# KV: REQUIRED by @cloudflare/workers-oauth-provider — it persists clients,
+# grants, and tokens here itself (keys: client:*, grant:{userId}:*, token:*).
+# Binding name MUST be OAUTH_KV.
+# OWNER: run `npm run kv:create`, paste the printed id below.
+# ---------------------------------------------------------------------------
+[[kv_namespaces]]
+binding = "OAUTH_KV"
+id = "198b4eab901246a5908cd16cba28ea3e"      # from: wrangler kv namespace create OAUTH_KV
+# preview_id = "REPLACE_ME_OAUTH_KV_PREVIEW_ID"  # optional, for `wrangler dev`
+
+# ---------------------------------------------------------------------------
+# Non-secret config. Secrets are set via `wrangler secret put` (see DEPLOY.md
+# §4), NOT here.
+# ---------------------------------------------------------------------------
+[vars]
+# Public base URL of this Worker; OAuth metadata + the /mcp URL given to
+# claude.ai are built from it. auth.js also derives the extension wssUrl and the
+# Google redirect_uri (${RELAY_BASE}/authorize/callback) from it. Matches the
+# custom-domain route above.
+RELAY_BASE = "https://relay.ytx.app"
+# Browser-origin CORS allowlist for the /mcp endpoint (claude.ai web is a browser
+# client). Consumed by relay-core's index.js/apiHandler, NOT auth.js — oauth's
+# /pair/claim deliberately uses ACAO:* (caller is the extension; the response is
+# gated by a single-use pairing code, so CORS isn't the boundary there).
+ALLOWED_ORIGINS = "https://claude.ai"
+# Identity selector for auth.js resolveUserId() (SPEC §4). Built modes:
+# "shared"   = single-user bootstrap; every grant → SHARED_USER_ID. Needs only
+#              OWNER_SECRET (typed at /authorize). No email setup. Single-tenant —
+#              do NOT open to other users in this mode.
+# "magiclink" = email a signed one-time link, userId = sha256(normalized email),
+#              full multi-user/multi-device. Needs MAGICLINK_SECRET + MAIL_API_KEY.
+# Ship "shared" for the first deploy; flip to "magiclink" once Resend is verified
+# (no rebuild — both are built behind resolveUserId).
+IDENTITY_MODE = "shared"
+# Only used in shared mode — the fixed single-user id. Ignored in magic-link mode.
+SHARED_USER_ID = "owner"
+# Magic-link "From" address (magic-link mode). auth.js defaults to login@ytx.app
+# if unset; the sending domain must be verified at the email provider.
+MAIL_FROM = "login@ytx.app"
+# Stable Chrome extension ID (manifest "key" pinned by webstore; dev==prod).
+# auth.js validExtRedirect() EXACT-MATCHES the /ext/authorize redirect_uri to
+# https://<EXTENSION_ID>.chromiumapp.org/ — a rogue extension can't run its own
+# launchWebAuthFlow against /ext/authorize and capture a device token (SIGNUP-SPEC
+# §1.2/§4.1). When unset, validExtRedirect falls back to the generic
+# ^https://[a-p]{32}.chromiumapp.org/?$ regex. Also powers the optional extDeepLink.
+# NOTE: pending human ratification per SIGNUP-SPEC §7 Q1 (real working keypair;
+# webstore will re-notify if the key is swapped pre-launch).
+EXTENSION_ID = "ockcjadbkdfgfllidpcoamcepahfmlpf"
+# Optional Gemini model override for the scout/vision tier (relay-core reads it).
+# Defaults to gemini-2.5-flash-lite if unset.
+# FASTLINK_GEMINI_MODEL = "gemini-2.5-flash-lite"
+# Optional (magiclink mode): the email marked is_operator=1 — enables the
+# operator-only fast_evaluate test mode (eval-allowlist delta, tasks #9/#10). In
+# shared mode the bootstrap user is operator automatically, so this is ignored.
+# OPERATOR_EMAIL = "you@example.com"
+
+# Secrets to set with `wrangler secret put <NAME>` (do NOT commit values).
+# Names verified against oauth/auth.js + SPEC §8 (FINAL):
+#   --- always required (all modes) ---
+#   COOKIE_SECRET     - HMAC for the OAuth round-trip state cookie (auth.js).
+#                       REQUIRED: without it auth.js runs on a known insecure
+#                       dev default. Set it for every real deploy.
+#   --- shared (bootstrap) identity mode ---
+#   OWNER_SECRET      - entry secret the human types at /authorize (bootstrap).
+#                       Canonical name (SPEC §8); auth.js accepts SHARED_SECRET
+#                       as an alias.
+#   --- magic-link identity mode ---
+#   MAGICLINK_SECRET  - HMAC key signing magic-link tokens (falls back to
+#                       COOKIE_SECRET if unset, but set it explicitly).
+#   MAIL_API_KEY      - Resend API key to send the link (auth.js reads
+#                       MAIL_API_KEY || RESEND_API_KEY; standardize on MAIL_API_KEY).
+#   --- active-optional (v1; scout/vision tier ported, SPEC §12) ---
+#   GEMINI_API_KEY    - enables fast_scout/point/point_som/fill_vision/do/locate.
+#                       OPTIONAL: without it those 6 tools return {disabled:true}
+#                       and the relay still runs. (auth-core falls back to
+#                       GOOGLE_API_KEY.) Operator pays for ALL users' vision calls
+#                       — see the cost/abuse flag in SAFETY.md §11 (shared+rate-
+#                       limit vs per-user key is an open pre-launch decision).
+#   --- BYO per-user Gemini key (tasks #9/#10; set before enabling per-user keys) ---
+#   KEY_ENC_SECRET    - AES-GCM key material to encrypt each user's own Gemini key
+#                       at rest in D1 (the per-user-key answer to the §11 cost
+#                       flag). Required ONLY once BYO-key is enabled; until then
+#                       the shared GEMINI_API_KEY path is used.
+
+# ---------------------------------------------------------------------------
+# Observability: tail/live logs back the audit/debug story (SAFETY.md §5).
+# ---------------------------------------------------------------------------
+[observability]
+enabled = true

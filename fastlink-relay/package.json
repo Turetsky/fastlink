@@ -1,0 +1,23 @@
+{
+  "name": "fastlink-relay",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Multi-tenant Cloudflare relay so claude.ai (web) can drive each user's own Chrome browser via a per-user Durable Object.",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail",
+    "d1:create": "wrangler d1 create fastlink-relay",
+    "migrate:local": "wrangler d1 migrations apply fastlink-relay --local",
+    "migrate": "wrangler d1 migrations apply fastlink-relay --remote",
+    "kv:create": "wrangler kv namespace create OAUTH_KV"
+  },
+  "dependencies": {
+    "@cloudflare/workers-oauth-provider": "^0.7.2"
+  },
+  "devDependencies": {
+    "wrangler": "^3.90.0"
+  }
+}
