@@ -16,6 +16,7 @@ npm-debug.log*
 
 # Built artifacts
 *.mcpb
+*.dxt
 
 # Secrets / local env
 .env
