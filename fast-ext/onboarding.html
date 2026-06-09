@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Welcome to FastLink</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body {
+      font: 15px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      margin: 0; padding: 40px 24px; color: #1a1a1a; background: #fafafa;
+    }
+    .wrap { max-width: 580px; margin: 0 auto; }
+    @media (prefers-color-scheme: dark) {
+      body { color: #e8e8e8; background: #1e1e1e; }
+      .card { background: #262626 !important; border-color: #383838 !important; }
+      .step.done { background: #14301c !important; border-color: #1f7a3d !important; }
+      input { background: #1a1a1a !important; color: #e8e8e8 !important; border-color: #444 !important; }
+      .muted { color: #d8d8d8 !important; }
+      .lead { color: #ececec !important; }
+      h1, h2 { color: #ffffff !important; }
+      code { color: #e8e8e8 !important; }
+      .pill.off { background: #3a3a3a !important; color: #dcdcdc !important; }
+      .connector { background: #1a1a1a !important; border-color: #444 !important; }
+      .disclosure summary { color: #8ab4f8 !important; }
+    }
+    h1 { font-size: 24px; margin: 0 0 6px; }
+    .lead { color: #3d3d3d; margin: 0 0 28px; font-size: 15px; }
+    .card {
+      background: #fff; border: 1px solid #e2e2e2; border-radius: 12px;
+      padding: 22px 24px; margin-bottom: 18px;
+    }
+    .step.done { background: #e9f8ee; border-color: #b6e6c5; }
+    .step-head { display: flex; align-items: center; gap: 10px; margin: 0 0 6px; }
+    .num {
+      flex: 0 0 26px; width: 26px; height: 26px; border-radius: 50%;
+      display: grid; place-items: center; font-weight: 700; font-size: 13px;
+      background: #2b6cee; color: #fff;
+    }
+    .step.done .num { background: #1a7f37; }
+    .step.locked { opacity: .55; }
+    .step.locked .num { background: #b8b8b8; }
+    h2 { font-size: 16px; margin: 0; }
+    p { margin: 8px 0; }
+    .muted { color: #555; font-size: 13.5px; }
+    button {
+      font: inherit; font-weight: 600; padding: 11px 18px; border-radius: 8px;
+      border: 1px solid transparent; cursor: pointer;
+    }
+    button.primary { background: #2b6cee; color: #fff; font-size: 15px; }
+    button.primary:hover { background: #1f5bd6; }
+    button.ghost { background: transparent; border-color: #ccc; color: inherit; }
+    button.small { padding: 7px 12px; font-size: 13px; }
+    button:disabled { opacity: .5; cursor: default; }
+    .pill { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; margin-left: 6px; }
+    .pill.ok   { background: #e3f6e6; color: #1a7f37; }
+    .pill.warn { background: #fdeccd; color: #9a6700; }
+    .pill.off  { background: #ececec; color: #555; }
+    .row { display: flex; gap: 10px; align-items: center; margin-top: 14px; flex-wrap: wrap; }
+    .connector {
+      display: flex; align-items: center; gap: 10px; margin: 12px 0;
+      background: #f4f6fb; border: 1px solid #dde3f0; border-radius: 8px; padding: 10px 12px;
+    }
+    .connector code {
+      flex: 1; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 13.5px;
+      word-break: break-all;
+    }
+    ol.howto { margin: 10px 0 0; padding-left: 20px; }
+    ol.howto li { margin: 4px 0; }
+    label { display: block; font-weight: 600; margin: 12px 0 4px; font-size: 13.5px; }
+    input {
+      width: 100%; box-sizing: border-box; padding: 9px 11px; font-size: 14px;
+      border: 1px solid #ccc; border-radius: 7px; background: #fff;
+    }
+    input#code { letter-spacing: .16em; font-family: ui-monospace, "SF Mono", Menlo, monospace; text-transform: uppercase; }
+    .msg { margin-top: 14px; padding: 10px 12px; border-radius: 7px; font-size: 13.5px; display: none; }
+    .msg.err  { display: block; background: #fde8e8; color: #b42318; }
+    .msg.ok   { display: block; background: #e3f6e6; color: #1a7f37; }
+    .msg.info { display: block; background: #eaf1fe; color: #1f5bd6; }
+    .disclosure { margin-top: 6px; }
+    .disclosure summary { cursor: pointer; color: #2b6cee; font-size: 13.5px; font-weight: 600; }
+    .disclosure[open] summary { margin-bottom: 8px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Welcome to FastLink</h1>
+    <p class="lead">FastLink lets Claude drive your own Chrome tab — read the page, click, fill forms, capture console &amp; network. Two quick steps to connect.</p>
+
+    <!-- STEP 1 — Sign in & connect -->
+    <div class="card step locked" id="step1">
+      <div class="step-head">
+        <span class="num" id="num1">1</span>
+        <h2>Sign in &amp; connect this browser <span id="conn-pill" class="pill off">Not connected</span></h2>
+      </div>
+      <p class="muted" id="step1-detail">Sign in to the FastLink relay. Your browser pairs automatically — no codes to copy.</p>
+      <div class="row">
+        <button id="signin-btn" class="primary">Sign in &amp; connect</button>
+        <span class="muted" id="signin-hint"></span>
+      </div>
+      <div id="msg" class="msg"></div>
+
+      <details class="disclosure" id="manual-disclosure">
+        <summary>Have a pairing code instead?</summary>
+        <label for="relayBase">Relay URL</label>
+        <input id="relayBase" type="url" placeholder="https://relay.ytx.app" value="https://relay.ytx.app" autocomplete="off" spellcheck="false" />
+        <label for="code">Pairing code</label>
+        <input id="code" type="text" placeholder="K7Q2-9XBD" autocomplete="off" spellcheck="false" maxlength="20" />
+        <div class="row">
+          <button id="pair-btn" class="ghost small">Pair with code</button>
+        </div>
+      </details>
+    </div>
+
+    <!-- STEP 2 — Enable vision (optional, BYO Gemini key) -->
+    <div class="card step locked" id="step2">
+      <div class="step-head">
+        <span class="num" id="num2">2</span>
+        <h2>Enable vision <span class="pill off" style="background:#eef;color:#55a;">optional</span></h2>
+      </div>
+      <p class="muted"><strong>FastLink works fully without this — it reads and drives the page from the DOM.</strong> Add your own Google Gemini API key only to light up the optional vision / scout speed tier (screenshot-based locating and page pre-reads). Without a key, those specific tools return <code>{disabled:true}</code> and everything else works normally.</p>
+      <label for="geminiKey">Gemini API key (optional)</label>
+      <input id="geminiKey" type="password" placeholder="AIza…" autocomplete="off" spellcheck="false" />
+      <div class="row">
+        <button id="gemini-btn" class="ghost small">Save key</button>
+        <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener" class="muted">Get a free key</a>
+        <span class="muted" id="gemini-hint"></span>
+      </div>
+      <div id="gemini-msg" class="msg"></div>
+    </div>
+
+    <!-- STEP 3 — Add to claude.ai -->
+    <div class="card step locked" id="step3">
+      <div class="step-head">
+        <span class="num" id="num3">3</span>
+        <h2>Add FastLink to claude.ai</h2>
+      </div>
+      <p class="muted">Add this URL as a custom connector in claude.ai, then sign in with the same account. Claude can then drive this browser.</p>
+      <div class="connector">
+        <code id="connector-url">https://relay.ytx.app/mcp</code>
+        <button id="copy-btn" class="ghost small">Copy</button>
+      </div>
+      <ol class="howto">
+        <li>In claude.ai, open <strong>Settings → Connectors → Add custom connector</strong>.</li>
+        <li>Paste the URL above and save, then <strong>Connect</strong> and sign in with the same account.</li>
+        <li>Start a chat and ask Claude to use FastLink on your active tab.</li>
+      </ol>
+    </div>
+
+    <!-- STEP 4 — Watch Claude work -->
+    <div class="card step locked" id="step4">
+      <div class="step-head">
+        <span class="num" id="num4">4</span>
+        <h2>Watch Claude work</h2>
+      </div>
+      <p class="muted">FastLink <strong>pins</strong> the tab Claude is working on, so it keeps driving that tab even when it isn't focused — you never lose your place in the chat.</p>
+      <ol class="howto">
+        <li>Keep <strong>claude.ai in one window</strong> and put the <strong>tab you want driven in a second window, side-by-side</strong>.</li>
+        <li>Ask Claude to act on that tab. A <strong>“Claude is driving this tab”</strong> panel appears top-right on it and annotates each click, type, and read in real time.</li>
+        <li>Because the tab is pinned, Claude drives it in the background without stealing your focus. The extension toolbar icon and popup also show what's being driven.</li>
+      </ol>
+    </div>
+
+    <p class="muted">You can reopen this page anytime from the extension's options. The local broker (Claude Code / Desktop) keeps working alongside the cloud relay.</p>
+  </div>
+
+  <script type="module" src="onboarding.js"></script>
+</body>
+</html>

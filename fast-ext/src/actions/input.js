@@ -25,11 +25,33 @@ try {
   });
 } catch {}
 
+// `debugger` is now an OPTIONAL permission (requested on demand from the popup/
+// options "Advanced control" toggle). Every CDP path — coordinate input
+// (click_xy/type/key/wheel/drag_xy), fast_evaluate, and background-tab / GPU-
+// fallback capture — funnels through cdp(), so this single guard makes the whole
+// debugger surface degrade gracefully: a clear, actionable error instead of a
+// raw "Cannot access" throw when the user hasn't granted it. DOM actions
+// (snapshot, selector click/fill) use chrome.scripting and never reach here.
+async function ensureDebuggerPermission() {
+  let has = false;
+  try { has = await chrome.permissions.contains({ permissions: ['debugger'] }); } catch {}
+  if (!has) {
+    const e = new Error(
+      'This needs FastLink’s optional "Advanced control" (debugger) permission — used for coordinate ' +
+      'clicks/typing, running scripts, and capturing background tabs. Enable it in the FastLink popup or ' +
+      'options → "Advanced control", then retry. DOM-based clicking and form-filling work without it.'
+    );
+    e.code = 'debugger_permission_required';
+    throw e;
+  }
+}
+
 // Send a CDP command on the persistent session (attach lazily, do NOT detach).
 // Exported so other actions (e.g. fast_evaluate) share ONE debugger session —
 // critical: a separate attach/detach per call toggles the "debugging Chrome"
 // banner, which shifts the viewport ~35-50px and makes coordinate clicks miss.
 export async function cdp(tabId, method, params) {
+  await ensureDebuggerPermission();
   await ensureAttached(tabId);
   return chrome.debugger.sendCommand({ tabId }, method, params || {});
 }

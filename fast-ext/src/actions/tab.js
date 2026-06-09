@@ -1,4 +1,24 @@
 import { getActiveTab } from '../util.js';
+import { setTargetTab, clearTargetTab, resolveTargetTab } from './targetTab.js';
+
+// ── SINGLE SOURCE OF TRUTH for "which tab does Claude act on?" ──────────────
+// Every action/snapshot/overlay must resolve its tab through these, NOT through
+// chrome.tabs.query({active:true}). The designated target tab (a concrete
+// pinned id) wins whenever one is set & still alive; only when NO target is
+// pinned do we fall back to the active tab. This is the core fix for the
+// cloud-relay case: the user sits on the claude.ai tab while Claude drives
+// another, so target tab ≠ active tab.
+
+// Resolve the full tab OBJECT Claude should act on (pinned-if-alive, else
+// active). Returns null if neither exists.
+export async function getTargetTab() {
+  return (await resolveTargetTab()) || (await getActiveTab()) || null;
+}
+
+// Resolve just the tab id Claude should act on. Returns undefined if none.
+export async function getTargetTabId() {
+  return (await getTargetTab())?.id;
+}
 
 // Fallback re-injection list for when the pre-injected page.js went stale.
 // Only page.js — it's the one DOM tools need (window.__fastlink). The console/
@@ -21,7 +41,10 @@ async function openTab({ url, background }) {
   const opts = { url, active: !background };
   try {
     const tab = await chrome.tabs.create(opts);
-    return { id: tab.id, url: tab.pendingUrl || tab.url };
+    // A tab Claude opens is a tab Claude means to drive — pin it so subsequent
+    // actions target it even though the user's focus may be elsewhere.
+    await setTargetTab(tab.id);
+    return { id: tab.id, url: tab.pendingUrl || tab.url, pinned: tab.id };
   } catch (e) {
     if (!/no current window/i.test(e?.message || '')) throw e;
     // Cold-started SW with no current window: pick any normal window, else
@@ -29,11 +52,13 @@ async function openTab({ url, background }) {
     const [win] = await chrome.windows.getAll({ windowTypes: ['normal'] });
     if (win) {
       const tab = await chrome.tabs.create({ ...opts, windowId: win.id });
-      return { id: tab.id, url: tab.pendingUrl || tab.url };
+      await setTargetTab(tab.id);
+      return { id: tab.id, url: tab.pendingUrl || tab.url, pinned: tab.id };
     }
     const created = await chrome.windows.create({ url, focused: !background });
     const tab = created.tabs?.[0];
-    return { id: tab?.id, url };
+    if (tab?.id !== undefined) await setTargetTab(tab.id);
+    return { id: tab?.id, url, pinned: tab?.id };
   }
 }
 
@@ -66,7 +91,7 @@ async function probeContentScript(tabId) {
 }
 
 async function navigateTab({ url, waitMs }) {
-  const tab = await getActiveTab();
+  const tab = await getTargetTab();
   if (!tab) return { error: 'No active tab' };
   await chrome.tabs.update(tab.id, { url });
   // Wait for the navigation to actually finish — without this, a subsequent
@@ -93,7 +118,7 @@ async function navigateTab({ url, waitMs }) {
 }
 
 async function reloadTab({ waitMs }) {
-  const tab = await getActiveTab();
+  const tab = await getTargetTab();
   if (!tab) return { error: 'No active tab' };
   await chrome.tabs.reload(tab.id, { bypassCache: true });
   await waitForComplete(tab.id, waitMs);
@@ -103,7 +128,11 @@ async function reloadTab({ waitMs }) {
 async function listTabs() {
   let tabs = await chrome.tabs.query({ currentWindow: true });
   if (tabs.length === 0) tabs = await chrome.tabs.query({ windowType: 'normal' });
-  return tabs.map(t => ({ id: t.id, url: t.url, title: t.title, active: t.active }));
+  const pinned = (await resolveTargetTab())?.id;
+  return tabs.map(t => ({
+    id: t.id, url: t.url, title: t.title, active: t.active,
+    ...(t.id === pinned ? { pinned: true } : {}),
+  }));
 }
 
 async function findTab({ tabId, match }) {
@@ -125,10 +154,24 @@ async function closeTab(args) {
   return { closed: { id: target.id, url: target.url, title: target.title } };
 }
 
-async function switchTab(args) {
+async function switchTab(args = {}) {
+  // Explicit release: drop the pin so actions resolve the active tab again.
+  if (args.clear || args.release || args.unpin) {
+    await clearTargetTab();
+    return { cleared: true };
+  }
   const target = await findTab(args);
   if (!target) return { error: 'No matching tab found. Try fast_list to see available tabs.' };
-  await chrome.tabs.update(target.id, { active: true });
-  if (target.windowId !== undefined) await chrome.windows.update(target.windowId, { focused: true });
-  return { id: target.id, url: target.url, title: target.title };
+  // PIN the resolved tabId. This is the core fix: a URL-substring switch
+  // resolves to a CONCRETE id and pins it, so it holds even if focus later
+  // snaps back to another tab (e.g. the claude.ai chat tab). Pinning happens
+  // before the focus change so the pin is set even if focus is rejected.
+  await setTargetTab(target.id);
+  // Bringing the tab to the foreground is best-effort — if the user clicks
+  // away, the pin (not focus) is what routes subsequent actions.
+  try {
+    await chrome.tabs.update(target.id, { active: true });
+    if (target.windowId !== undefined) await chrome.windows.update(target.windowId, { focused: true });
+  } catch {}
+  return { id: target.id, url: target.url, title: target.title, pinned: target.id };
 }

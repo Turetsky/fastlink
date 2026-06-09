@@ -29,6 +29,16 @@ const SKIP_SUBTREE = new Set([
 // the serialize loop and wedged the renderer.
 const MAX_INDEX = 10000;
 
+// ─── Heavy-page guards (issue #7: heavy-DOM main-thread freeze) ───
+// The DOM walk and the snapshot serialize are chunked: after at most SLICE_MS
+// of contiguous main-thread work we YIELD to the event loop, so even mid-index
+// the page never goes "unresponsive". A node-walk CEILING bails the full walk
+// on giant SPAs (50k+ nodes) so we never even attempt to serialize the world.
+const SLICE_MS = 25;     // max contiguous main-thread time before yielding
+const MAX_WALK = 25000;  // hard ceiling on DOM nodes VISITED by the index walk
+const HUGE_INDEX = 8000; // above this many entries, snapshots degrade to viewport-only
+                         // (kept under MAX_INDEX 10000; normal rich pages sit far below)
+
 const visible = (el, rect) => {
   if (rect.width < 2 || rect.height < 2) return false;
   const cs = getComputedStyle(el);
@@ -154,6 +164,7 @@ const INDEX = (typeof window !== 'undefined' && window.__fastlinkIndex)
       options: new Set(),
       nextId: 0,
       ready: false,
+      capped: false,       // node-walk ceiling hit → index is intentionally partial
       initStarted: false,
       observer: null,
       // Dynamic/self-limiting state (so the content script is never a
@@ -324,48 +335,107 @@ const walkSubtree = (root, onEl) => {
   }
 };
 
-// Initial population, chunked into ~500-element bites yielded via
-// requestIdleCallback. Never blocks paint; finishes in the background.
-const populateIndexAsync = () => {
-  if (INDEX.initStarted) return;
-  INDEX.initStarted = true;
-  const stack = [];
+// Shared initial-walk state, persisted on INDEX so the async (idle-time) build
+// and the snapshot-time build (buildIndexAsync) advance the SAME cursor and
+// converge — instead of each restarting DFS from <body>. `walked` is a monotonic
+// count of nodes VISITED, enforcing the MAX_WALK ceiling across all slices.
+const INIT = INDEX._init || (INDEX._init = { stack: null, walked: 0 });
+const ensureInitStack = () => {
+  if (INIT.stack) return;
   const root = document.body || document.documentElement;
-  if (root) stack.push(root);
-  const CHUNK = 500;
-  const step = (deadline) => {
-    let n = 0;
-    while (stack.length && n < CHUNK && (!deadline || deadline.timeRemaining() > 1)) {
-      const el = stack.pop();
-      if (!el || el.nodeType !== 1) continue;
+  INIT.stack = root ? [root] : [];
+};
+
+// Process up to `budget` elements off the shared initial-walk stack, stopping
+// early when `overBudget()` returns true. Flips INDEX.ready once the walk
+// drains. Returns the number of elements processed this slice.
+const stepInitWalk = (budget, overBudget) => {
+  ensureInitStack();
+  const stack = INIT.stack;
+  let n = 0;
+  while (stack.length && n < budget) {
+    // Hard node ceiling: a 50k-node SPA (GCP) must NEVER attempt a full walk —
+    // visiting every node is itself the main-thread hog (matches(SELECTOR) per
+    // node). Once we've VISITED MAX_WALK nodes, stop expanding: the entries we
+    // have plus viewport-only serialization are enough, and a complete walk
+    // would just freeze the page. Flagged so snapshots advertise partial:true.
+    if (INIT.walked >= MAX_WALK) { INIT.stack = []; INDEX.ready = true; INDEX.capped = true; break; }
+    const el = stack.pop();
+    n++;
+    INIT.walked++;
+    if (el && el.nodeType === 1) {
       const tag = el.tagName.toLowerCase();
-      if (SKIP_SUBTREE.has(tag)) continue;
-      indexElement(el);
-      if (el.children) for (let i = el.children.length - 1; i >= 0; i--) stack.push(el.children[i]);
-      if (el.shadowRoot && el.shadowRoot.children) {
-        for (let i = el.shadowRoot.children.length - 1; i >= 0; i--) stack.push(el.shadowRoot.children[i]);
-      }
-      if (tag === 'iframe') {
-        let doc = null;
-        try { doc = el.contentDocument; } catch {}
-        if (doc) {
-          const inner = doc.body || doc.documentElement;
-          if (inner && inner.children) {
-            for (let i = inner.children.length - 1; i >= 0; i--) stack.push(inner.children[i]);
+      if (!SKIP_SUBTREE.has(tag)) {
+        indexElement(el);
+        if (el.children) for (let i = el.children.length - 1; i >= 0; i--) stack.push(el.children[i]);
+        if (el.shadowRoot && el.shadowRoot.children) {
+          for (let i = el.shadowRoot.children.length - 1; i >= 0; i--) stack.push(el.shadowRoot.children[i]);
+        }
+        if (tag === 'iframe') {
+          let doc = null;
+          try { doc = el.contentDocument; } catch {}
+          if (doc) {
+            const inner = doc.body || doc.documentElement;
+            if (inner && inner.children) {
+              for (let i = inner.children.length - 1; i >= 0; i--) stack.push(inner.children[i]);
+            }
           }
         }
       }
-      n++;
     }
-    if (stack.length) {
+    if (overBudget && overBudget()) break;
+  }
+  if (!stack.length) INDEX.ready = true;
+  return n;
+};
+
+// Advance the initial walk under a wall-clock deadline, YIELDING between slices.
+// Called at snapshot time when INDEX.ready is still false — on ad/tracker-heavy
+// pages the main thread never goes idle, so requestIdleCallback is perpetually
+// starved and the async (idle) build can stall with the index EMPTY. This forces
+// progress while still releasing the main thread every SLICE_MS, so the heavy
+// walk NEVER blocks the page into "unresponsive" (issue #7). Never waits on the
+// network. Returns true if the walk completed within the deadline.
+const buildIndexAsync = async (deadlineMs) => {
+  if (INDEX.ready) return true;
+  const start = nowMs();
+  let sliceStart = start;
+  while (!INDEX.ready) {
+    let k = 0;
+    // Bound this slice by SLICE_MS (sampled cheaply every 256 elements). The
+    // huge step budget is just a ceiling; the time check is the real bound.
+    stepInitWalk(5_000_000, () => ((++k & 255) === 0) && (nowMs() - sliceStart) > SLICE_MS);
+    if (INDEX.ready) break;
+    if ((nowMs() - start) > deadlineMs) break;   // overall deadline → partial index
+    await yieldControl();                          // let the page breathe
+    sliceStart = nowMs();
+  }
+  return !!INDEX.ready;
+};
+
+// Initial population, chunked and yielded via requestIdleCallback so it never
+// blocks paint. A guaranteed per-tick FLOOR is processed regardless of how much
+// idle time the callback reports: a busy SPA (GCP / ad-heavy pages) hands back
+// callbacks with ~0 timeRemaining, and the old `while timeRemaining > 1` guard
+// then made ZERO progress forever — leaving the index empty and INDEX.ready
+// stuck false. The floor guarantees forward progress; snapshots additionally
+// force-build (yielding) via buildIndexAsync.
+const INIT_FLOOR = 400;    // elements indexed per tick even under idle starvation
+const INIT_CHUNK = 2000;   // opportunistic extra while real idle time remains
+const populateIndexAsync = () => {
+  if (INDEX.initStarted) return;
+  INDEX.initStarted = true;
+  ensureInitStack();
+  const step = (deadline) => {
+    stepInitWalk(INIT_FLOOR, null);   // unconditional floor — always advances
+    if (!INDEX.ready) {
+      stepInitWalk(INIT_CHUNK, () => deadline && typeof deadline.timeRemaining === 'function' && deadline.timeRemaining() <= 1);
+    }
+    if (!INDEX.ready) {
       if (typeof requestIdleCallback !== 'undefined') requestIdleCallback(step, { timeout: 200 });
       else setTimeout(() => step(null), 0);
-    } else {
-      INDEX.ready = true;
     }
   };
-  // {timeout:200} so the initial walk completes even when Angular starves idle
-  // time — otherwise INDEX.ready never flips and the index stays partial.
   if (typeof requestIdleCallback !== 'undefined') requestIdleCallback(step, { timeout: 200 });
   else setTimeout(() => step(null), 0);
 };
@@ -389,6 +459,26 @@ const PENDING = INDEX._pending || (INDEX._pending = {
 });
 
 const nowMs = () => (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+
+// Yield the main thread for one macrotask so the page can paint / handle input
+// between work slices. MessageChannel is used (not setTimeout) because timers
+// are clamped to ≥1s in BACKGROUND tabs — which is exactly the relay case where
+// Claude drives a backgrounded tab — and requestAnimationFrame is paused there
+// entirely. MessageChannel postMessage is not throttled, so a heavy snapshot in
+// a background tab still progresses promptly. scheduler.yield() is preferred
+// when available (keeps us ahead of the line on re-entry).
+const yieldControl = () => {
+  if (typeof scheduler !== 'undefined' && typeof scheduler.yield === 'function') {
+    try { return scheduler.yield(); } catch {}
+  }
+  return new Promise((resolve) => {
+    try {
+      const ch = new MessageChannel();
+      ch.port1.onmessage = () => resolve();
+      ch.port2.postMessage(0);
+    } catch { setTimeout(resolve, 0); }
+  });
+};
 
 // Pull the next unit of indexing work into a resumable cursor.
 //   removes / adds → descend the whole subtree (a node was attached/detached).
@@ -599,7 +689,7 @@ const collectOverlayEls = () => {
 // Read the index → snapshot payload. Single layout pass for all rect reads.
 // Cleans up entries whose elements have been detached (defense in depth;
 // MutationObserver usually catches removals first).
-const serializeSnapshot = (viewportOnly, opts) => {
+const serializeSnapshot = async (viewportOnly, opts) => {
   // ALWAYS bound the serialize. Previously budgetMs was undefined on the
   // pre-action matching snapshots (serializeSnapshot(false) in fast_click/fill/
   // etc.), so the per-element time guard below was dead code and the loop walked
@@ -612,6 +702,23 @@ const serializeSnapshot = (viewportOnly, opts) => {
   // Disconnect the observer if FastLink has gone idle (no background watcher on
   // an unused tab).
   maybeIdleSuspend();
+  // If the initial index walk hasn't finished, advance it synchronously under
+  // the snapshot indexer's OWN deadline so we return a POPULATED partial index
+  // rather than empty-and-hanging. This does NOT wait on network idle (which
+  // often never fires on ad/tracker-heavy pages) — it's a bounded DOM walk.
+  let indexPartial = false;
+  if (!INDEX.ready) {
+    const indexMs = (opts && opts.indexMs) || 2500;
+    await buildIndexAsync(indexMs);
+    indexPartial = !INDEX.ready;
+  }
+  // Auto-degrade: on a giant DOM (node ceiling hit, or an index already past
+  // HUGE_INDEX entries) force viewport-only output. Reading + offsetting rects
+  // for tens of thousands of entries is the freeze; viewport-only keeps the
+  // payload small and the loop short. Heavy pages get partial-but-usable data
+  // instead of a hang.
+  const heavy = INDEX.capped || INDEX.byEl.size > HUGE_INDEX;
+  if (heavy) viewportOnly = true;
   // On a storm-tripped page the observer is OFF, so the index isn't being kept
   // live by mutations. Re-walk the DOM on demand here (bounded) so this snapshot
   // still reflects current state — this is the "rebuild on demand instead of
@@ -644,12 +751,18 @@ const serializeSnapshot = (viewportOnly, opts) => {
   let seen = 0;
   const vh = window.innerHeight, vw = window.innerWidth;
   const detached = [];
+  let sliceStart = nowMs();
   for (const [el, entry] of INDEX.byEl) {
-    // Per-element wall-clock guard (checked every 256 items to stay cheap): a
-    // successful action must never hang on serialization — bail with a
-    // partial-but-rich snapshot flagged snapshotTimedOut instead of letting the
-    // whole call hit the broker timeout.
-    if (budgetMs && ((++seen & 63) === 0) && (nowMs() - startMs) > budgetMs) { timedOut = true; break; }
+    // Every 64 items (cheap), enforce two bounds:
+    //   • overall budget → bail with a partial-but-rich snapshot flagged
+    //     snapshotTimedOut, never hang the whole call to the broker timeout.
+    //   • per-slice SLICE_MS → YIELD the main thread so even a 10k-entry
+    //     serialize can't freeze the page into "unresponsive" (issue #7).
+    if ((++seen & 63) === 0) {
+      const t = nowMs();
+      if (budgetMs && (t - startMs) > budgetMs) { timedOut = true; break; }
+      if ((t - sliceStart) > SLICE_MS) { await yieldControl(); sliceStart = nowMs(); }
+    }
     if (!el.isConnected) { detached.push(el); continue; }
     let rect;
     try { rect = el.getBoundingClientRect(); } catch { continue; }
@@ -688,6 +801,8 @@ const serializeSnapshot = (viewportOnly, opts) => {
     count: items.length, items,
     contentCount: content.length, content,
     indexing: !INDEX.ready || undefined,
+    partial: (indexPartial || INDEX.capped) || undefined,
+    capped: INDEX.capped || undefined,
     snapshotTimedOut: timedOut || undefined,
   };
 };
@@ -750,12 +865,22 @@ async function runPageAction(action, args) {
     // the agent still has rich text to act on instead of reaching for a
     // screenshot.
     try {
-      const snap = serializeSnapshot(true, { budgetMs: 4000, drainMs: 40 });
+      // Time-boxed + abortable: serialize now yields the main thread every
+      // SLICE_MS and bails at budgetMs, so a heavy page can NEVER turn a
+      // successful click/fill into a 30s broker timeout or freeze the renderer.
+      // indexMs is bounded too so the auto-snapshot returns within a couple
+      // seconds (partial is fine — the action already succeeded).
+      const snap = await serializeSnapshot(true, { budgetMs: 2000, drainMs: 30, indexMs: 1500 });
       result.snapshot = snap;
-      if (snap && snap.snapshotTimedOut) result.snapshotTimedOut = true;
+      if (snap && (snap.snapshotTimedOut || snap.partial || snap.capped)) {
+        result.snapshotPartial = true;
+        if (snap.snapshotTimedOut) result.snapshotTimedOut = true;
+        if (snap.capped) result.snapshotNote = 'page too heavy — viewport-only / partial index returned';
+      }
     } catch (e) {
       result.snapshot = null;
-      result.snapshotTimedOut = true;
+      result.snapshotPartial = true;
+      result.snapshotNote = 'snapshot skipped — page too heavy to serialize';
     }
     return result;
   };
@@ -879,7 +1004,7 @@ async function runPageAction(action, args) {
   };
 
   if (action === 'fast_snapshot') {
-    return serializeSnapshot(!!args.viewport, { overlay: !!args.overlay });
+    return await serializeSnapshot(!!args.viewport, { overlay: !!args.overlay });
   }
 
   if (action === 'fast_wait') {
@@ -1062,7 +1187,7 @@ async function runPageAction(action, args) {
   }
 
   if (action === 'fast_hover') {
-    const snap = serializeSnapshot(false);
+    const snap = await serializeSnapshot(false);
     const matches = matchItems(snap.items, args.text);
     if (matches.length === 0) return { error: `No element matching "${args.text}"`, diagnostics: diagnoseNoMatch(args.text) };
     const idx = typeof args.index === 'number' ? args.index : 0;
@@ -1090,7 +1215,7 @@ async function runPageAction(action, args) {
   }
 
   if (action === 'fast_drag') {
-    const snap = serializeSnapshot(false);
+    const snap = await serializeSnapshot(false);
     const fromMatches = matchItems(snap.items, args.from);
     if (fromMatches.length === 0) return { error: `No "from" element matching "${args.from}"` };
     const fromIdx = typeof args.fromIndex === 'number' ? args.fromIndex : 0;
@@ -1132,7 +1257,7 @@ async function runPageAction(action, args) {
   }
 
   if (action === 'fast_click') {
-    const snap = serializeSnapshot(false);
+    const snap = await serializeSnapshot(false);
     const preFilter = matchItems(snap.items, args.text);
     let matches = preFilter;
     if (args.role) {
@@ -1179,27 +1304,46 @@ async function runPageAction(action, args) {
       if (el.scrollHeight <= el.clientHeight + 1) return false;
       return /(auto|scroll|overlay)/.test(getComputedStyle(el).overflowY);
     };
+    const docFallback = () => ({ el: document.scrollingElement || document.documentElement, kind: 'document' });
     const findScroller = () => {
       if (args.selector) {
         const el = document.querySelector(args.selector);
         if (!el) return { error: `selector "${args.selector}" not found` };
         return { el, kind: 'selector' };
       }
-      let el = document.elementFromPoint(window.innerWidth / 2, window.innerHeight / 2);
-      while (el && el !== document.body && el !== document.documentElement) {
-        if (isScrollableBox(el)) return { el, kind: 'ancestor' };
-        el = el.parentElement;
-      }
-      let best = null, bestArea = 0;
-      for (const e of document.querySelectorAll('main, main *, [role="main"], [role="main"] *, body > *, body > * *')) {
-        if (!isScrollableBox(e)) continue;
-        const r = e.getBoundingClientRect();
-        if (r.width < 100 || r.height < 100) continue;
-        const area = r.width * r.height;
-        if (area > bestArea) { best = e; bestArea = area; }
-      }
-      if (best) return { el: best, kind: 'largest' };
-      return { el: document.scrollingElement || document.documentElement, kind: 'document' };
+      // Container auto-detection forces synchronous layout (getComputedStyle +
+      // getBoundingClientRect) per candidate. On ad/tracker-heavy pages with a
+      // huge DOM (e.g. Micro Center's PC builder) this once ran 30s+ and hung
+      // the action. We can't interrupt synchronous JS with a Promise timeout,
+      // so instead we hard-bound the work with an in-loop time budget and bail
+      // to a plain document/window scroll the moment we exceed it. fast_scroll
+      // must ALWAYS return within a couple seconds; a slightly-less-precise
+      // container is better than a hang (and callers can still pass `selector`
+      // or use fast_wheel for canvas/virtualized cases).
+      const deadline = Date.now() + 400;
+      try {
+        let el = document.elementFromPoint(window.innerWidth / 2, window.innerHeight / 2);
+        let depth = 0;
+        while (el && el !== document.body && el !== document.documentElement && depth++ < 60) {
+          if (isScrollableBox(el)) return { el, kind: 'ancestor' };
+          el = el.parentElement;
+        }
+        let best = null, bestArea = 0, scanned = 0;
+        for (const e of document.querySelectorAll('main, main *, [role="main"], [role="main"] *, body > *, body > * *')) {
+          // Bail out of the expensive scan if we blow the time budget or scan
+          // an unreasonable number of nodes — fall back to whatever we found
+          // (or the document) rather than walking a massive ad-laden DOM.
+          if ((++scanned & 0x1ff) === 0 && Date.now() > deadline) break;
+          if (scanned > 20000) break;
+          if (!isScrollableBox(e)) continue;
+          const r = e.getBoundingClientRect();
+          if (r.width < 100 || r.height < 100) continue;
+          const area = r.width * r.height;
+          if (area > bestArea) { best = e; bestArea = area; }
+        }
+        if (best) return { el: best, kind: 'largest' };
+      } catch {}
+      return docFallback();
     };
     const found = findScroller();
     if (found.error) return found;
@@ -1251,7 +1395,7 @@ async function runPageAction(action, args) {
 
   if (action === 'fast_fill') {
     const m = (args.match || '').toLowerCase();
-    const snap = serializeSnapshot(false);
+    const snap = await serializeSnapshot(false);
     const found = snap.items.find(it => isFillable(it) && fieldMatchesText(it, m));
     if (!found) return { error: `No fillable element matching "${args.match}"` };
     return withSnap(fillItem(found, args.value, args.append));
@@ -1263,7 +1407,7 @@ async function runPageAction(action, args) {
     const append = !!args.append;
     const stopOnError = !!args.stopOnError;
     const verify = !!args.verify;
-    const items = serializeSnapshot(false).items;
+    const items = (await serializeSnapshot(false)).items;
     const usedI = new Set();
     const results = {};
     let filled = 0, missed = 0;

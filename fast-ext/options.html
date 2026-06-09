@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>FastLink — Connection</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body {
+      font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      margin: 0; padding: 28px; max-width: 620px;
+      color: #1a1a1a; background: #fafafa;
+    }
+    @media (prefers-color-scheme: dark) {
+      body { color: #e8e8e8; background: #1e1e1e; }
+      .card { background: #262626 !important; border-color: #383838 !important; }
+      input { background: #1a1a1a !important; color: #e8e8e8 !important; border-color: #444 !important; }
+      .muted { color: #d8d8d8 !important; }
+      .sub { color: #ececec !important; }
+      h1, h2 { color: #ffffff !important; }
+    }
+    h1 { font-size: 18px; margin: 0 0 4px; }
+    .sub { color: #666; margin: 0 0 20px; }
+    .card { background: #fff; border: 1px solid #e2e2e2; border-radius: 10px; padding: 18px 20px; margin-bottom: 16px; }
+    .card h2 { font-size: 14px; margin: 0 0 12px; text-transform: uppercase; letter-spacing: .04em; color: #555; }
+    label { display: block; font-weight: 600; margin: 12px 0 4px; }
+    input {
+      width: 100%; box-sizing: border-box; padding: 9px 11px; font-size: 14px;
+      border: 1px solid #ccc; border-radius: 7px; background: #fff;
+    }
+    input#code { letter-spacing: .18em; font-family: ui-monospace, "SF Mono", Menlo, monospace; text-transform: uppercase; }
+    .row { display: flex; gap: 10px; align-items: center; margin-top: 16px; flex-wrap: wrap; }
+    button {
+      font: inherit; font-weight: 600; padding: 9px 16px; border-radius: 7px;
+      border: 1px solid transparent; cursor: pointer;
+    }
+    button.primary { background: #2b6cee; color: #fff; }
+    button.primary:hover { background: #1f5bd6; }
+    button.ghost { background: transparent; border-color: #ccc; color: inherit; }
+    button:disabled { opacity: .5; cursor: default; }
+    .muted { color: #777; font-size: 13px; }
+    .pill { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 12px; font-weight: 700; }
+    .pill.ok   { background: #e3f6e6; color: #1a7f37; }
+    .pill.warn { background: #fdeccd; color: #9a6700; }
+    .pill.off  { background: #ececec; color: #555; }
+    .status { margin: 4px 0 0; }
+    .msg { margin-top: 14px; padding: 10px 12px; border-radius: 7px; font-size: 13px; display: none; }
+    .msg.err { display: block; background: #fde8e8; color: #b42318; }
+    .msg.ok  { display: block; background: #e3f6e6; color: #1a7f37; }
+    code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12.5px; }
+  </style>
+</head>
+<body>
+  <h1>FastLink Connection</h1>
+  <p class="sub">FastLink reaches this browser two ways at once: the local broker (Claude Code / Desktop) and the cloud relay (claude.ai on the web driving your own browser). Both can run together — pairing the relay no longer turns off the broker.</p>
+
+  <div class="card">
+    <h2>Current status</h2>
+    <p class="status">Local broker: <span id="local-pill" class="pill off">…</span></p>
+    <p class="status">Cloud relay: <span id="relay-pill" class="pill off">…</span></p>
+    <p class="status muted" id="status-detail">Loading…</p>
+  </div>
+
+  <div class="card" id="pair-card">
+    <h2>Pair with the cloud relay</h2>
+    <p class="muted">One click signs you in to the relay and pairs this browser automatically — no codes to copy. You only pair once per browser; you can pair multiple browsers (Claude drives whichever was opened or paired most recently).</p>
+    <label for="relayBase">Relay base URL</label>
+    <input id="relayBase" type="url" placeholder="https://relay.ytx.app" value="https://relay.ytx.app" autocomplete="off" spellcheck="false" />
+    <div class="row">
+      <button id="signin-btn" class="primary">Sign in &amp; connect</button>
+      <a href="onboarding.html" target="_blank" class="muted">Open the welcome guide</a>
+    </div>
+    <div id="msg" class="msg"></div>
+
+    <details class="disclosure" style="margin-top:14px;">
+      <summary style="cursor:pointer;color:#2b6cee;font-weight:600;font-size:13px;">Have a pairing code instead?</summary>
+      <label for="code">Pairing code</label>
+      <input id="code" type="text" placeholder="K7Q2-9XBD" autocomplete="off" spellcheck="false" maxlength="20" />
+      <div class="row">
+        <button id="pair-btn" class="ghost">Pair with code</button>
+        <span class="muted">Applies live (or on reload).</span>
+      </div>
+    </details>
+  </div>
+
+  <div class="card">
+    <h2>Cloud relay control</h2>
+    <p class="muted">The local broker (Claude Code / Desktop) is always on by default. Use this to turn the cloud relay OFF and run the local broker only. Does not revoke the device on the relay server — re-enable by pairing again.</p>
+    <div class="row">
+      <button id="local-btn" class="ghost">Use local broker only</button>
+    </div>
+  </div>
+
+  <div class="card" id="advanced-card">
+    <h2>Advanced control <span id="dbg-pill" class="pill off">…</span></h2>
+    <p class="muted">FastLink works out of the box with DOM-based reading, clicking, and form-filling. <strong>Advanced control</strong> grants Chrome's debugger permission, which adds: precise coordinate clicks/typing (vision tier), running scripts on the page, and <strong>capturing tabs that aren’t in front</strong> (so Claude can drive a background tab while you stay on the chat). Grant it only if you want those — you can revoke it anytime.</p>
+    <div class="row">
+      <button id="dbg-btn" class="ghost">Enable advanced control</button>
+      <span class="muted" id="dbg-detail"></span>
+    </div>
+  </div>
+
+  <script type="module" src="options.js"></script>
+</body>
+</html>

@@ -3,7 +3,7 @@
 export const TOOLS = [
   {
     name: 'fast_scout',
-    description: 'PREFERRED way to understand and act on the active tab — use this instead of fast_snapshot in most cases. A fast model (Gemini) reads the live page (stable ids, shadow DOM + same-origin iframes) and is pre-warmed on every page load, so the page comprehension is usually already cached when you call. Two modes: (1) NO intent → returns {summary, elements:[{i,purpose}], warmed} — a concise semantic read of the page (a smarter, smaller snapshot). (2) WITH intent → returns {brief, steps:[{name,args}], warmed, needsMoreInfo?} where each step is a runnable fast_* call (use directly or via fast_batch). Prefer passing an intent when you know your goal (e.g. "log in as alice@x.com"). Falls back to fast_snapshot for raw element coords or when you need detail the model omitted. Requires GEMINI_API_KEY on the server (returns {disabled:true} otherwise).',
+    description: 'PREFERRED way to understand and act on the active tab — use this instead of fast_snapshot in most cases. A fast model (Gemini) reads the live page (stable ids, shadow DOM + same-origin iframes) and is pre-warmed on every page load, so the page comprehension is usually already cached when you call. Two modes: (1) NO intent → returns {summary, elements:[{i,purpose}], warmed} — a concise semantic read of the page (a smarter, smaller snapshot). (2) WITH intent → returns {brief, steps:[{name,args}], warmed, needsMoreInfo?} where each step is a runnable fast_* call (use directly or via fast_batch). Prefer passing an intent when you know your goal (e.g. "log in as alice@x.com"). NOTE: intent mode returns runnable ACTIONS, not extracted page data. For DATA-EXTRACTION goals ("list every processor with name/price/stock", "read all the prices") it correctly returns an empty brief:"" / steps:[] — that is a SUCCESS, not a failure; use NO-intent mode (semantic read) or fast_snapshot / fast_text to pull the actual content. Falls back to fast_snapshot for raw element coords or when you need detail the model omitted. Requires GEMINI_API_KEY on the server (returns {disabled:true} otherwise).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -300,7 +300,7 @@ export const TOOLS = [
   },
   {
     name: 'fast_scroll',
-    description: 'Scroll the active tab. Auto-detects the right scroll container (handles nested scrollers like claude.ai chat, not just window). Pass "to" (top|bottom|"50%") or "pixels" (delta, positive=down). Optional selector to target a specific scroller. Returns include a fresh `snapshot` of the post-scroll viewport (opt out with noSnapshot:true).',
+    description: 'Scroll the active tab. Auto-detects the right scroll container (handles nested scrollers like claude.ai chat, not just window); container detection is time-bounded and falls back to a plain window scroll on huge ad/tracker-heavy DOMs, so this always returns within ~1s and never hangs. Pass "to" (top|bottom|"50%") or "pixels" (delta, positive=down). Optional selector to target a specific scroller. For canvas/WebGL/virtualized views that ignore programmatic scrollTop, use fast_wheel instead. Returns include a fresh `snapshot` of the post-scroll viewport (opt out with noSnapshot:true).',
     inputSchema: {
       type: 'object',
       properties: {

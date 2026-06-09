@@ -1,9 +1,11 @@
 {
   "manifest_version": 3,
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAqzfauzY0b8+OBo7BV+S2HiiodBd8UxeIbDIaUzsIc/+WvV0f2VNITG0Vj0m3jU/+heOS1Qw0Ir7jY3geYY9hRaAcBg+acaGXwtGM3AMmRgjZujJ0m3n+dEK/b/MJ4Pp1HPXErTYgncByeIntg2ThO8SplEMYvwSwWZHmUBWs0hIL4JBDeOGaZh1p0bDWwzkh2KjZkHXIZLrSvxjUhHx947DmMYuZ1NTK6KMXrAzZLS23tJL0dV31xgAQd0/nXwzpmF9WTWFV2mvb8uaKZzFDaL6K7HV06XcByIgiIOxXwlrNbHH7KezdxH61KusNi0UhK+J73jHsWVBFlzomoy+tmwIDAQAB",
   "name": "FastLink",
-  "version": "0.3.0",
-  "description": "FastLink — bridges Claude (Desktop / Code / Cloud) to your active Chrome tab via a localhost WebSocket broker. Read DOM, click, fill, capture console & network.",
-  "permissions": ["tabs", "scripting", "activeTab", "alarms", "webRequest", "debugger", "storage"],
+  "version": "0.4.0",
+  "description": "Let Claude read and control your active Chrome tab — snapshot the DOM, click, fill forms, capture console and network logs.",
+  "permissions": ["tabs", "scripting", "activeTab", "alarms", "webRequest", "storage", "identity"],
+  "optional_permissions": ["debugger"],
   "host_permissions": ["<all_urls>"],
   "background": { "service_worker": "background.js", "type": "module" },
   "content_scripts": [
@@ -23,7 +25,8 @@
     }
   ],
   "action": {
-    "default_title": "FastLink — click to reload",
+    "default_title": "FastLink",
+    "default_popup": "popup.html",
     "default_icon": {
       "16": "icons/icon-16.png",
       "32": "icons/icon-32.png",
@@ -31,6 +34,7 @@
       "128": "icons/icon-128.png"
     }
   },
+  "options_ui": { "page": "options.html", "open_in_tab": true },
   "icons": {
     "16": "icons/icon-16.png",
     "32": "icons/icon-32.png",

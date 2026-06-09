@@ -10,7 +10,7 @@
 //   • Gemini points come back    = normalized 0-1000 of the IMAGE we send
 // So the server divides by dpr at the end; this file just reports dpr + the
 // exact image dims (and, for a crop, where the crop sits in CSS space).
-import { injectInTab } from '../util.js';
+import { injectInTab, captureVisiblePinAware } from '../util.js';
 
 function readDpr() {
   return window.devicePixelRatio || 1;
@@ -63,12 +63,7 @@ export async function visionCapture(args = {}) {
     if (r.error) return r;
     const dpr = r.result || 1;
 
-    let dataUrl;
-    try {
-      dataUrl = await chrome.tabs.captureVisibleTab(null, { format: 'png' });
-    } catch (e) {
-      dataUrl = await chrome.tabs.captureVisibleTab(null, { format: 'png' });
-    }
+    const dataUrl = await captureVisiblePinAware({ format: 'png' });
     if (!dataUrl) return { error: 'vision capture: no image' };
 
     const cropCss = args.crop && typeof args.crop === 'object' ? args.crop : null;
@@ -101,12 +96,7 @@ export async function annotateBoxes(args = {}) {
     if (r.error) return r;
     const dpr = r.result || 1;
 
-    let dataUrl;
-    try {
-      dataUrl = await chrome.tabs.captureVisibleTab(null, { format: 'png' });
-    } catch (e) {
-      dataUrl = await chrome.tabs.captureVisibleTab(null, { format: 'png' });
-    }
+    const dataUrl = await captureVisiblePinAware({ format: 'png' });
     if (!dataUrl) return { error: 'annotateBoxes: no image' };
 
     const blob = await (await fetch(dataUrl)).blob();

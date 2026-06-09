@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <style>
+    :root { color-scheme: light dark; }
+    body {
+      font: 13px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      margin: 0; padding: 14px; width: 260px;
+      color: #1a1a1a; background: #fafafa;
+    }
+    @media (prefers-color-scheme: dark) {
+      body { color: #e8e8e8; background: #1e1e1e; }
+      button.ghost { border-color: #444 !important; }
+    }
+    h1 { font-size: 14px; margin: 0 0 8px; }
+    p { margin: 6px 0; }
+    .muted { color: #777; }
+    .pill { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 11px; font-weight: 700; }
+    .pill.ok   { background: #e3f6e6; color: #1a7f37; }
+    .pill.warn { background: #fdeccd; color: #9a6700; }
+    .pill.off  { background: #ececec; color: #555; }
+    .row { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+    button {
+      font: inherit; font-weight: 600; padding: 8px 12px; border-radius: 7px;
+      border: 1px solid transparent; cursor: pointer; width: 100%;
+    }
+    button.primary { background: #2b6cee; color: #fff; }
+    button.ghost { background: transparent; border: 1px solid #ccc; color: inherit; }
+    .consent {
+      margin-top: 12px; padding: 10px 12px; border-radius: 8px;
+      background: #fff7e6; border: 1px solid #f0d8a8;
+    }
+    @media (prefers-color-scheme: dark) {
+      .consent { background: #2a2418 !important; border-color: #5c4a1f !important; }
+    }
+    .consent h2 { font-size: 12px; margin: 0 0 4px; text-transform: uppercase; letter-spacing: .04em; color: #9a6700; }
+    .consent .origin { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px; word-break: break-all; margin: 2px 0 8px; }
+    .consent .btns { display: flex; gap: 6px; }
+    .consent .btns button { padding: 6px 8px; font-size: 12px; }
+    .consent button.allow { background: #1a7f37; color: #fff; }
+    .consent button.read  { background: #2b6cee; color: #fff; }
+    .consent button.block { background: transparent; border: 1px solid #c44; color: #c44; }
+    .consent .cmsg { font-size: 12px; margin: 6px 0 0; }
+    .driving {
+      margin-top: 10px; padding: 7px 10px; border-radius: 7px; font-size: 12px; font-weight: 600;
+      background: rgba(92,200,255,0.14); color: #1f6fb0; border: 1px solid rgba(92,200,255,0.4);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .driving.paused {
+      background: rgba(255,176,32,0.16); color: #9a6700; border-color: rgba(255,176,32,0.5);
+      white-space: normal;
+    }
+    @media (prefers-color-scheme: dark) {
+      .driving { color: #bcd4ff !important; }
+      .driving.paused { color: #f0c674 !important; }
+    }
+    button.stop { background: #c0392b; color: #fff; border-color: transparent; }
+    button.resume { background: #1a7f37; color: #fff; border-color: transparent; }
+  </style>
+</head>
+<body>
+  <h1>FastLink</h1>
+  <div id="rows"><p class="muted">Loading…</p></div>
+  <div id="driving" class="driving" style="display:none;"></div>
+  <div id="consent" class="consent" style="display:none;"></div>
+  <div class="row" id="controls" style="display:none;">
+    <button id="pause-btn" class="stop">⏸ Stop driving</button>
+    <button id="disconnect-btn" class="ghost" style="display:none;">Disconnect relay</button>
+  </div>
+  <div class="row">
+    <button id="open" class="primary">Pairing settings</button>
+    <button id="reload" class="ghost">Reload extension</button>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>

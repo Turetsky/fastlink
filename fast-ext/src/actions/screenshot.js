@@ -1,15 +1,13 @@
+import { captureViewport } from '../util.js';
+
 export async function takeScreenshot(args = {}) {
-  const format = (args.format || 'png').toLowerCase();
-  const opts = { format };
-  if (format === 'jpeg' && typeof args.quality === 'number') opts.quality = args.quality;
-  let dataUrl;
+  // captureViewport retries the fast GPU path, then falls back to a software
+  // CDP capture — so a wedged GPU process ("image readback failed") no longer
+  // takes down every screenshot for the rest of the session. On total failure
+  // it throws an error carrying an actionable .hint; surface that to the caller.
   try {
-    dataUrl = await chrome.tabs.captureVisibleTab(undefined, opts);
+    return await captureViewport(args);
   } catch (e) {
-    // Intermittent "image readback failed"/timeout right after heavy work — an
-    // immediate retry succeeds. Wait a beat and retry exactly once.
-    await new Promise((r) => setTimeout(r, 300));
-    dataUrl = await chrome.tabs.captureVisibleTab(undefined, opts);
+    return { error: e?.message || String(e), hint: e?.hint };
   }
-  return { dataUrl, format };
 }

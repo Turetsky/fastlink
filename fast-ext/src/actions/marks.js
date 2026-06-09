@@ -1,4 +1,4 @@
-import { injectInTab } from '../util.js';
+import { injectInTab, captureVisiblePinAware } from '../util.js';
 
 // Set-of-Mark: annotate a screenshot of the visible tab with numbered boxes
 // over the visible interactive elements, so a multimodal model can name the
@@ -72,15 +72,12 @@ export async function captureMarks(args = {}) {
       return { error: 'fast_marks: no interactive elements to mark in the current viewport.' };
     }
 
-    // 3. Capture the visible tab (device px). One retry on the intermittent
-    //    "image readback failed" right after heavy work, matching screenshot.js.
-    let dataUrl;
-    try {
-      dataUrl = await chrome.tabs.captureVisibleTab(null, { format: 'png' });
-    } catch (e) {
-      await new Promise((res) => setTimeout(res, 300));
-      dataUrl = await chrome.tabs.captureVisibleTab(null, { format: 'png' });
-    }
+    // 3. Capture the target tab (device px). captureVisiblePinAware uses the
+    //    quota-aware captureVisibleTab path normally, but when Claude's pinned
+    //    tab is backgrounded (relay case) it captures THAT tab via CDP instead —
+    //    so we never annotate the wrong (on-screen) tab. Both paths return
+    //    device-px so the dpr coord math below holds.
+    const dataUrl = await captureVisiblePinAware({ format: 'png' });
 
     // 4. Annotate with OffscreenCanvas (a normal <canvas> isn't available in an
     //    MV3 service worker). Scale every CSS-px coord by dpr to match the image.

@@ -26,8 +26,33 @@
   let host = null;
   let shadow = null;
   let listEl = null;
+  let statusEl = null;
+  let hdrDot = null;
   let dismissTimer = null;
-  const rows = new Map(); // id -> { rowEl, args, timers }
+  const rows = new Map(); // id -> { rowEl, args, label, timers }
+
+  // Map a raw tool name to a human-readable present-tense verb the user can
+  // grok at a glance. Anything unmapped falls back to the de-prefixed name.
+  const VERB = {
+    fast_snapshot: 'Reading page', fast_marks: 'Reading page',
+    fast_text: 'Reading text', fast_vision_capture: 'Looking at page',
+    fast_annotate_boxes: 'Looking at page', fast_screenshot: 'Capturing screenshot',
+    fast_click: 'Clicking', fast_click_xy: 'Clicking',
+    fast_fill: 'Typing', fast_type: 'Typing', fast_fill_vision: 'Typing',
+    fast_fill_form: 'Filling form', fast_select_option: 'Selecting',
+    fast_nav: 'Navigating to', fast_reload: 'Reloading',
+    fast_scroll: 'Scrolling', fast_wheel: 'Scrolling',
+    fast_hover: 'Hovering', fast_drag: 'Dragging', fast_drag_xy: 'Dragging',
+    fast_wait: 'Waiting', fast_key: 'Pressing key', fast_key_press: 'Pressing key',
+    fast_tab: 'Switching tab', fast_switch: 'Switching tab',
+    fast_list: 'Listing tabs', fast_close: 'Closing tab',
+    fast_console: 'Reading console', fast_network: 'Reading network',
+    fast_network_replay: 'Replaying request', fast_evaluate: 'Running script',
+    fast_macro_run: 'Running macro', fast_macro_save: 'Saving macro',
+    fast_macro_list: 'Listing macros', fast_macro_delete: 'Deleting macro',
+  };
+  const humanVerb = (action) =>
+    VERB[action] || String(action || '').replace(/^fast_/, '').replace(/_/g, ' ') || 'Working';
 
   const ensureMounted = () => {
     if (host && document.documentElement.contains(host)) return;
@@ -52,9 +77,20 @@
         max-width:360px;
         pointer-events:auto;
       }
-      .hdr { display:flex; align-items:center; gap:6px; margin-bottom:6px; opacity:0.85; }
-      .dot { width:8px; height:8px; border-radius:50%; background:#5cc8ff; box-shadow:0 0 6px #5cc8ff; }
+      .hdr { display:flex; align-items:center; gap:6px; margin-bottom:6px; opacity:0.92; }
+      .dot { width:8px; height:8px; border-radius:50%; background:#5cc8ff; box-shadow:0 0 6px #5cc8ff; flex:none; }
+      .dot.run  { background:#5cc8ff; box-shadow:0 0 6px #5cc8ff; animation:flpulse 1s ease-in-out infinite; }
+      .dot.idle { background:#6dd58c; box-shadow:0 0 6px #6dd58c; animation:none; }
+      @keyframes flpulse { 0%,100%{opacity:1;} 50%{opacity:0.25;} }
       .ttl { font-weight:600; letter-spacing:0.2px; }
+      .status {
+        display:flex; align-items:center; gap:4px;
+        margin-bottom:6px; padding:3px 6px; border-radius:6px;
+        font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+        background:rgba(255,255,255,0.05); color:#9aa3b2;
+      }
+      .status.working { color:#bcd4ff; background:rgba(92,200,255,0.12); }
+      .status.done    { color:#6dd58c; background:rgba(109,213,140,0.12); }
       .list { display:flex; flex-direction:column; gap:4px; max-height:60vh; overflow:hidden; }
       .row {
         display:flex; align-items:baseline; gap:6px;
@@ -74,11 +110,37 @@
     `;
     const panel = document.createElement('div');
     panel.className = 'panel';
-    panel.innerHTML = `<div class="hdr"><span class="dot"></span><span class="ttl">FastLink</span></div><div class="list"></div>`;
+    panel.innerHTML = `<div class="hdr"><span class="dot"></span><span class="ttl">Claude is driving this tab</span></div><div class="status"></div><div class="list"></div>`;
     shadow.appendChild(style);
     shadow.appendChild(panel);
     listEl = panel.querySelector('.list');
+    statusEl = panel.querySelector('.status');
+    hdrDot = panel.querySelector('.dot');
     document.documentElement.appendChild(host);
+    updateStatus();
+  };
+
+  // Reflect live driving state in the header so a user glancing over from the
+  // claude.ai tab instantly sees what's happening — and, crucially, when it's
+  // DONE. Three states: working (an action is mid-flight), done/idle (Claude
+  // finished, nothing running), and connected (panel up, nothing yet).
+  const updateStatus = () => {
+    if (!statusEl) return;
+    let running = null;
+    for (const e of rows.values()) if (e.rowEl.classList.contains('run')) running = e;
+    if (running) {
+      statusEl.textContent = '▶ ' + running.label;
+      statusEl.className = 'status working';
+      if (hdrDot) hdrDot.className = 'dot run';
+    } else if (rows.size) {
+      statusEl.textContent = '✓ Done — idle';
+      statusEl.className = 'status done';
+      if (hdrDot) hdrDot.className = 'dot idle';
+    } else {
+      statusEl.textContent = 'Connected — waiting for Claude';
+      statusEl.className = 'status';
+      if (hdrDot) hdrDot.className = 'dot idle';
+    }
   };
 
   const fmtMeta = (action, args) => {
@@ -109,15 +171,18 @@
         rows.delete(oldId);
       }
     }
+    const verb = humanVerb(action);
+    const meta = fmtMeta(action, args);
     const rowEl = document.createElement('div');
     rowEl.className = 'row run';
     rowEl.dataset.id = id;
     rowEl.innerHTML = `<span class="tool"></span><span class="meta"></span><span class="ms"></span>`;
-    rowEl.querySelector('.tool').textContent = (action || '').replace(/^fast_/, '');
-    rowEl.querySelector('.meta').textContent = fmtMeta(action, args);
+    rowEl.querySelector('.tool').textContent = verb;
+    rowEl.querySelector('.meta').textContent = meta;
     listEl.appendChild(rowEl);
-    const entry = { rowEl, started: performance.now(), timers: [] };
+    const entry = { rowEl, started: performance.now(), label: meta ? `${verb} ${meta}` : verb, timers: [] };
     rows.set(id, entry);
+    updateStatus();
     return entry;
   };
 
@@ -133,7 +198,9 @@
       meta.textContent = (meta.textContent ? meta.textContent + ' — ' : '') + String(errMsg).slice(0, 60);
     }
     entry.timers.push(setTimeout(() => entry.rowEl.classList.add('fade'), FADE_AFTER_MS));
-    entry.timers.push(setTimeout(() => { entry.rowEl.remove(); rows.delete(id); }, REMOVE_AFTER_MS));
+    entry.timers.push(setTimeout(() => { entry.rowEl.remove(); rows.delete(id); updateStatus(); }, REMOVE_AFTER_MS));
+    // Refresh the header: flips to "✓ Done — idle" once nothing is still running.
+    updateStatus();
     // If that was the last tool still running, start the countdown to close the
     // whole panel. A new tool (ensureRow → cancelDismiss) cancels it; otherwise
     // the panel disappears DISMISS_AFTER_MS after this final tool.
@@ -174,6 +241,7 @@
       try { entry.rowEl.remove(); } catch {}
     }
     rows.clear();
+    updateStatus();
   };
 
   // bfcache trap: when this page is frozen into the back/forward cache, its rows

@@ -38,6 +38,6 @@ export const REQUEST_TIMEOUT_MS = 30_000;
 export const GEMINI_API_KEY = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '';
 // Benchmarked winner for both planning and the vision/screenshot rung: fastest
 // (TTFT ~440ms) AND fully accurate. 3.5-flash ~5× slower, 3.1-lite ~1.6×. See
-// fastlink-scout-BENCHMARKS.md. Fallback for hard pages: gemini-2.5-flash.
+// docs/scout-BENCHMARKS.md. Fallback for hard pages: gemini-2.5-flash.
 export const GEMINI_MODEL = process.env.FASTLINK_GEMINI_MODEL || 'gemini-2.5-flash-lite';
 export const SCOUT_ENABLED = !!GEMINI_API_KEY;

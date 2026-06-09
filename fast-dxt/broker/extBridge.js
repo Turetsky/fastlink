@@ -26,7 +26,12 @@ export function startExtBridge() {
 }
 
 function startOne(defaultId, port) {
-  const wss = new WebSocketServer({ port, host: '127.0.0.1' });
+  // Bind all interfaces (not just 127.0.0.1): the extension dials localhost
+  // normally, but falls back to the WSL VM IP when WSL2 localhost-forwarding
+  // breaks (it dies after a host sleep until `wsl --shutdown`) — that fallback
+  // path needs the broker reachable on eth0. LAN exposure is acceptable: WSL2
+  // NAT means other machines can't reach this VM without an explicit portproxy.
+  const wss = new WebSocketServer({ port, host: '0.0.0.0' });
   wss.on('listening', () => log(`ext WS listening on ${port} (default install: ${defaultId})`));
   wss.on('error', (e) => onFatalListenError('ext', port, e));
   wss.on('connection', (ws, req) => {
@@ -66,6 +71,10 @@ function startOne(defaultId, port) {
       }
       if (msg.ping) {
         if (installId) state.notePing(installId);
+        // Echo a pong so the extension can detect a half-open socket (no inbound
+        // for >N ping cycles => dead path) and self-heal. Additive + backward
+        // compatible: older extensions ignore unknown inbound frames.
+        try { ws.send(JSON.stringify({ pong: true })); } catch {}
         return;
       }
       // Unsolicited extension events (e.g. page-load) fan out to MCP servers,
