@@ -95,7 +95,7 @@ ALLOWED_ORIGINS = "https://claude.ai"
 #              full multi-user/multi-device. Needs MAGICLINK_SECRET + MAIL_API_KEY.
 # Ship "shared" for the first deploy; flip to "magiclink" once Resend is verified
 # (no rebuild — both are built behind resolveUserId).
-IDENTITY_MODE = "shared"
+IDENTITY_MODE = "google"
 # Only used in shared mode — the fixed single-user id. Ignored in magic-link mode.
 SHARED_USER_ID = "owner"
 # Magic-link "From" address (magic-link mode). auth.js defaults to login@ytx.app

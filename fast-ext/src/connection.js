@@ -1,17 +1,35 @@
 // Reconnect via chrome.alarms — service workers get killed and revived,
 // alarms survive the death.
 
-// FastLink is private to two installs. Each install hardcodes its INSTALL_ID
-// here and connects to its own port — so two extensions running in different
-// Chrome profiles on the same machine never collide on the broker.
-//   yaakov: 9876
-//   dad:    9877
-// To deploy to the other profile, change INSTALL_ID below and reload the
-// extension at chrome://extensions.
-const INSTALL_ID = 'yaakov';
-const INSTALL_PORTS = { yaakov: 9876, dad: 9877 };
-const PORT = INSTALL_PORTS[INSTALL_ID];
-if (!PORT) throw new Error(`FastLink: unknown INSTALL_ID "${INSTALL_ID}"`);
+// FastLink supports two install SLOTS so two Chrome profiles on the same
+// machine never collide on the broker — each slot connects to its own port:
+//   primary:   9876  (the default — a fresh install needs no configuration)
+//   secondary: 9877  (a 2nd Chrome profile; set via the options page, no source edit)
+// The slot id is resolved at connect time from chrome.storage.local
+// ('fastlinkInstallId'), DEFAULTING to 'primary' when unset — so a fresh
+// install is 'primary' automatically and a 2nd profile just flips a stored
+// flag instead of editing code.
+const INSTALL_PORTS = { primary: 9876, secondary: 9877 };
+const DEFAULT_INSTALL_ID = 'primary';
+const INSTALL_ID_KEY = 'fastlinkInstallId';
+// Cached after the first storage read so the hot path (ping/event sends) stays
+// synchronous. connect() awaits resolveInstallId() before dialing.
+let installId = DEFAULT_INSTALL_ID;
+let installResolved = false;
+
+async function resolveInstallId() {
+  if (installResolved) return installId;
+  try {
+    const o = await chrome.storage.local.get(INSTALL_ID_KEY);
+    const stored = o?.[INSTALL_ID_KEY];
+    if (typeof stored === 'string' && Object.hasOwn(INSTALL_PORTS, stored)) installId = stored;
+  } catch {}
+  installResolved = true;
+  return installId;
+}
+
+// Current slot's broker port. Derived live so it tracks installId once resolved.
+function currentPort() { return INSTALL_PORTS[installId] || INSTALL_PORTS[DEFAULT_INSTALL_ID]; }
 const RECONNECT_ALARM = 'fastlink-reconnect';
 // Application-level ping every 20s. Two effects:
 //   1. Keeps the broker from terminating us as "dead" if WS pong frames don't
@@ -35,13 +53,17 @@ const CONNECT_TIMEOUT_MS = 12_000;
 // broker died without a clean FIN) — recycle it. Gated on pongCapable so an
 // older broker that doesn't echo pongs is never falsely recycled while idle.
 const STALE_MS = 50_000;
-// Broker hosts, tried in order. 127.0.0.1 is the normal path (WSL2 localhost
-// forwarding); the WSL VM IP is the fallback for when forwarding is broken
-// (it dies after a host sleep until `wsl --shutdown`). Each dial that never
-// reaches OPEN rotates to the next candidate, so the extension self-heals in
-// BOTH worlds — no manual shim edits, and a stale VM IP (it changes across WSL
-// restarts) just rotates back to localhost.
-const HOSTS = ['127.0.0.1', '172.27.53.208'];
+// Broker hosts, tried in order. 127.0.0.1 is the normal path on every platform
+// (native broker on macOS / Windows, or WSL2 localhost-forwarding). Each dial
+// that never reaches OPEN rotates to the next candidate, so the failover
+// MECHANISM is preserved even with a single host.
+//
+// SHIPPED DEFAULT is 127.0.0.1 only — we do NOT ship a machine-specific WSL VM
+// IP (it changes across WSL restarts and leaks a private address). WSL users
+// whose localhost-forwarding breaks after a host sleep can append their VM IP
+// here as a fallback, e.g. `['127.0.0.1', '172.x.y.z']` (get it with
+// `ip addr show eth0` inside WSL). The real cure, though, is restart-wsl.bat.
+const HOSTS = ['127.0.0.1'];
 
 const ICONS = {
   green:  { 16: 'icons/icon-green-16.png',  32: 'icons/icon-green-32.png',  48: 'icons/icon-green-48.png',  128: 'icons/icon-green-128.png' },
@@ -97,6 +119,7 @@ async function connect() {
   // has a window. Otherwise the SW (kept alive by alarms) would claim the
   // install slot while having zero tabs to serve.
   if (!await hasAnyWindow()) return;
+  await resolveInstallId();   // resolve this profile's slot (cached) before dialing
   recycle();   // drop any stale/zombie socket before dialing a fresh one
 
   // Previous dial never opened → that host is unreachable right now; rotate to
@@ -106,7 +129,7 @@ async function connect() {
   lastDialOpened = false;
 
   let ws;
-  try { ws = new WebSocket(`ws://${HOSTS[hostIdx]}:${PORT}`); }
+  try { ws = new WebSocket(`ws://${HOSTS[hostIdx]}:${currentPort()}`); }
   catch { scheduleReconnect(); return; }
   socket = ws;
   connectStartedAt = Date.now();
@@ -116,7 +139,7 @@ async function connect() {
     lastDialOpened = true;                             // this host works — keep dialing it
     backoffMs = BACKOFF_MIN_MS;                        // healthy connection — reset backoff
     lastRxTs = Date.now();
-    try { ws.send(JSON.stringify({ type: 'hello', installId: INSTALL_ID })); } catch {}
+    try { ws.send(JSON.stringify({ type: 'hello', installId })); } catch {}
     startPingLoop(ws);
   };
   ws.onmessage = (e) => onMessage(ws, e);
@@ -217,7 +240,7 @@ function stopPingLoop() {
 // signal so the scout can pre-warm its page map. No-op if the socket is down.
 export function sendEvent(payload) {
   if (socket && socket.readyState === WebSocket.OPEN) {
-    try { socket.send(JSON.stringify({ type: 'event', installId: INSTALL_ID, ...payload })); } catch {}
+    try { socket.send(JSON.stringify({ type: 'event', installId, ...payload })); } catch {}
   }
 }
 
@@ -242,6 +265,6 @@ function publish(state) {
     ? (lastClientCount >= 2 ? 'green' : 'yellow')
     : state === 'connecting' ? 'yellow' : 'red';
   try { chrome.action.setIcon({ path: ICONS[color] }); } catch {}
-  try { chrome.action.setTitle({ title: `FastLink — ${lastClientCount} MCP client${lastClientCount === 1 ? '' : 's'} (broker port ${PORT})` }); } catch {}
+  try { chrome.action.setTitle({ title: `FastLink — ${lastClientCount} MCP client${lastClientCount === 1 ? '' : 's'} (broker port ${currentPort()})` }); } catch {}
   try { chrome.storage.local.set({ fastlinkConn: { local: { enabled: true, state, clients: lastClientCount } } }); } catch {}
 }

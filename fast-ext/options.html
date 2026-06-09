@@ -1,103 +1,486 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-fl-theme="dark">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>FastLink — Connection</title>
+  <title>FastLink — Settings</title>
+  <!-- Brand fonts (match fastlink-site): Bricolage Grotesque + Hanken Grotesk + JetBrains Mono -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700;12..96,800&family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="src/theme.css" />
   <style>
-    :root { color-scheme: light dark; }
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
     body {
-      font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-      margin: 0; padding: 28px; max-width: 620px;
-      color: #1a1a1a; background: #fafafa;
+      font: 14px/1.5 var(--fl-font);
+      margin: 0; padding: 0 24px 56px;
+      color: var(--fl-text);
+      background:
+        radial-gradient(1100px 520px at 88% -8%, rgba(245,174,60,0.17), transparent 62%),
+        radial-gradient(820px 460px at 4% 2%, rgba(243,165,44,0.09), transparent 58%),
+        var(--fl-bg);
+      min-height: 100vh;
+      position: relative;
     }
-    @media (prefers-color-scheme: dark) {
-      body { color: #e8e8e8; background: #1e1e1e; }
-      .card { background: #262626 !important; border-color: #383838 !important; }
-      input { background: #1a1a1a !important; color: #e8e8e8 !important; border-color: #444 !important; }
-      .muted { color: #d8d8d8 !important; }
-      .sub { color: #ececec !important; }
-      h1, h2 { color: #ffffff !important; }
+    /* faint engineering grid, faded toward the page edges (site atmosphere) */
+    body::before {
+      content: ""; position: fixed; inset: 0; z-index: -1; pointer-events: none;
+      background-image:
+        linear-gradient(rgba(255,255,255,.022) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255,255,255,.022) 1px, transparent 1px);
+      background-size: 46px 46px;
+      -webkit-mask-image: radial-gradient(ellipse 90% 60% at 50% 0%, #000 30%, transparent 78%);
+              mask-image: radial-gradient(ellipse 90% 60% at 50% 0%, #000 30%, transparent 78%);
     }
-    h1 { font-size: 18px; margin: 0 0 4px; }
-    .sub { color: #666; margin: 0 0 20px; }
-    .card { background: #fff; border: 1px solid #e2e2e2; border-radius: 10px; padding: 18px 20px; margin-bottom: 16px; }
-    .card h2 { font-size: 14px; margin: 0 0 12px; text-transform: uppercase; letter-spacing: .04em; color: #555; }
-    label { display: block; font-weight: 600; margin: 12px 0 4px; }
-    input {
-      width: 100%; box-sizing: border-box; padding: 9px 11px; font-size: 14px;
-      border: 1px solid #ccc; border-radius: 7px; background: #fff;
+    /* Cap the content width and center it — a full-bleed grid is a big part of
+       why the page read as a sprawling "colony". A comfortable measure makes
+       the wider cards feel intentional. */
+    .wrap { max-width: 1140px; margin: 0 auto; padding: 0 32px; position: relative; }
+
+    /* ---- header ---- */
+    .head {
+      display: flex; align-items: center; gap: 14px;
+      padding: 40px 0 8px;
     }
-    input#code { letter-spacing: .18em; font-family: ui-monospace, "SF Mono", Menlo, monospace; text-transform: uppercase; }
-    .row { display: flex; gap: 10px; align-items: center; margin-top: 16px; flex-wrap: wrap; }
+    .head .fl-mark { width: 40px; height: 40px; border-radius: 12px; }
+    .head h1 { font-family: var(--fl-font-display); font-size: 24px; margin: 0; letter-spacing: -0.02em; font-weight: 800; }
+    .head .fl-wordmark { font-weight: 800; }
+    .head .lead { color: var(--fl-text-dim); margin: 3px 0 0; font-size: 14px; max-width: 560px; }
+    .head .ver {
+      margin-left: auto; align-self: flex-start; font-size: 12px; font-weight: 600;
+      color: var(--fl-text-faint); font-variant-numeric: tabular-nums;
+      background: var(--fl-surface-2); border: 1px solid var(--fl-border);
+      padding: 3px 9px; border-radius: var(--fl-r-pill);
+    }
+
+    /* ---- groups ---- */
+    /* Settings are organized into a few labelled groups (Connection, Capabilities,
+       Operation, Permissions & info) instead of one flat wall of equal cards.
+       Each group gets a quiet mono divider label and generous space above it, so
+       the eye reads structure rather than a pile. */
+    .group { margin-top: 44px; }
+    .group:first-of-type { margin-top: 28px; }
+    .group-head {
+      display: flex; align-items: center; gap: 14px;
+      margin: 0 0 18px; padding: 0 2px;
+    }
+    .group-label {
+      font-family: var(--fl-mono); font-size: 11.5px; font-weight: 600;
+      text-transform: uppercase; letter-spacing: .16em; color: var(--fl-text-faint);
+      white-space: nowrap;
+    }
+    .group-rule {
+      flex: 1; height: 1px;
+      background: linear-gradient(90deg, var(--fl-border), transparent);
+    }
+
+    /* Calm 2-column grid within each group, generous gaps. .span-2 lets a card
+       take the full width (used for the Connection lead, Pair, and Vision).
+       Collapses to a single column on narrow widths. */
+    .group-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 22px;
+      align-items: start;
+    }
+    .span-2 { grid-column: 1 / -1; }
+    @media (max-width: 860px) {
+      .group-grid { grid-template-columns: 1fr; }
+    }
+
+    /* ---- cards ---- */
+    .card {
+      background: var(--fl-glass-card); border: 1px solid var(--fl-border);
+      border-radius: var(--fl-r-lg); box-shadow: var(--fl-shadow);
+      -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
+      padding: 22px 24px;
+    }
+    /* The Connection card is the lead — it answers "is FastLink connected right
+       now?". Extra padding, a stronger border, and a faint amber wash + glow set
+       it apart from the rest of the settings. */
+    .card.lead {
+      padding: 26px 28px;
+      border-color: var(--fl-border-strong);
+      background:
+        radial-gradient(130% 150% at 0% 0%, color-mix(in srgb, var(--fl-signal) 10%, transparent), transparent 56%),
+        var(--fl-glass-card);
+      box-shadow: var(--fl-glow), var(--fl-shadow);
+    }
+    .card > h2 {
+      font-family: var(--fl-mono);
+      font-size: 12px; margin: 0 0 4px; text-transform: uppercase;
+      letter-spacing: .06em; color: var(--fl-text-dim);
+      display: flex; align-items: center; gap: 9px; flex-wrap: wrap;
+    }
+    .card > h2 .badge { text-transform: none; letter-spacing: 0; }
+    .card .desc { color: var(--fl-text-dim); font-size: 13.5px; margin: 0 0 8px; }
+    .card .desc:last-of-type { margin-bottom: 0; }
+
+    .muted { color: var(--fl-text-dim); }
+    .fine  { color: var(--fl-text-faint); font-size: 13px; }
+    /* Pairing-code disclosure: faint token is too dim to read on the dark bg; raise to the dim tone so this secondary copy is comfortably legible. */
+    .disclosure .fine { color: var(--fl-text-dim); }
+
+    /* ---- pills ---- */
+    .pill { display: inline-block; padding: 3px 11px; border-radius: var(--fl-r-pill);
+            font-size: 12px; font-weight: 700; }
+    .pill.ok   { background: var(--fl-ok-bg);   color: var(--fl-ok-text); }
+    .pill.warn { background: var(--fl-warn-bg); color: var(--fl-warn-text); }
+    .pill.off  { background: var(--fl-surface-2); color: var(--fl-text-dim); }
+    .pill.err  { background: var(--fl-err-bg);  color: var(--fl-err-text); }
+    .pill.rec  { background: var(--fl-signal-soft); color: var(--fl-signal); }
+
+    /* ---- connection status rows ---- */
+    .trow { padding: 11px 0; border-top: 1px solid var(--fl-border); }
+    .trow:first-child { border-top: 0; padding-top: 4px; }
+    .trow-main { display: flex; align-items: center; gap: 9px; }
+    .trow-title { font-weight: 600; }
+    .trow-main .pill { margin-left: auto; }
+    .trow-sub { color: var(--fl-text-dim); font-size: 13px; margin-top: 4px; padding-left: 17px; }
+    .trow-sub code { font-family: var(--fl-mono); font-size: 12.5px;
+      background: var(--fl-surface-2); padding: 1px 5px; border-radius: 4px; color: var(--fl-text); }
+
+    /* ---- buttons ---- */
+    .row { display: flex; gap: 10px; align-items: center; margin-top: 14px; flex-wrap: wrap; }
     button {
-      font: inherit; font-weight: 600; padding: 9px 16px; border-radius: 7px;
+      font: inherit; font-weight: 600; padding: 9px 15px; border-radius: var(--fl-r-sm);
       border: 1px solid transparent; cursor: pointer;
+      transition: background .12s ease, border-color .12s ease, filter .12s ease;
     }
-    button.primary { background: #2b6cee; color: #fff; }
-    button.primary:hover { background: #1f5bd6; }
-    button.ghost { background: transparent; border-color: #ccc; color: inherit; }
+    button.primary {
+      background: linear-gradient(180deg, var(--fl-signal), #E0941F);
+      color: var(--fl-on-accent); box-shadow: var(--fl-glow);
+    }
+    button.primary:hover { filter: brightness(1.05); box-shadow: var(--fl-glow-strong); }
+    button.ghost { background: var(--fl-surface); border: 1px solid var(--fl-border-strong); color: var(--fl-text); }
+    button.ghost:hover { background: var(--fl-surface-2); }
+    button.small { padding: 7px 12px; font-size: 13px; }
+    button.stop   { background: var(--fl-err); color: #fff; }
+    button.stop:hover { filter: brightness(0.94); }
+    button.resume { background: var(--fl-ok); color: #fff; }
+    button.resume:hover { filter: brightness(0.94); }
     button:disabled { opacity: .5; cursor: default; }
-    .muted { color: #777; font-size: 13px; }
-    .pill { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 12px; font-weight: 700; }
-    .pill.ok   { background: #e3f6e6; color: #1a7f37; }
-    .pill.warn { background: #fdeccd; color: #9a6700; }
-    .pill.off  { background: #ececec; color: #555; }
-    .status { margin: 4px 0 0; }
-    .msg { margin-top: 14px; padding: 10px 12px; border-radius: 7px; font-size: 13px; display: none; }
-    .msg.err { display: block; background: #fde8e8; color: #b42318; }
-    .msg.ok  { display: block; background: #e3f6e6; color: #1a7f37; }
-    code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12.5px; }
+    a.linkbtn {
+      display: inline-flex; align-items: center; gap: 5px;
+      font-weight: 600; font-size: 13.5px; color: var(--fl-signal); text-decoration: none;
+    }
+    a.linkbtn:hover { text-decoration: underline; }
+
+    /* ---- inputs ---- */
+    label { display: block; font-weight: 600; margin: 14px 0 5px; font-size: 13.5px; }
+    input, select {
+      width: 100%; padding: 10px 12px; font-size: 14px;
+      border: 1px solid var(--fl-border-strong); border-radius: var(--fl-r-sm);
+      background: var(--fl-surface); color: var(--fl-text);
+    }
+    input:focus, select:focus {
+      outline: 2px solid color-mix(in srgb, var(--fl-signal) 55%, transparent);
+      outline-offset: 1px; border-color: var(--fl-signal);
+    }
+    input#code { letter-spacing: .16em; font-family: var(--fl-mono); text-transform: uppercase; }
+    code { font-family: var(--fl-mono); font-size: 12.5px; }
+
+    /* ---- messages ---- */
+    .msg { margin-top: 14px; padding: 10px 12px; border-radius: var(--fl-r-sm); font-size: 13.5px; display: none; }
+    .msg.err  { display: block; background: var(--fl-err-bg);  color: var(--fl-err-text); }
+    .msg.ok   { display: block; background: var(--fl-ok-bg);   color: var(--fl-ok-text); }
+    .msg.info { display: block; background: var(--fl-read-bg); color: var(--fl-read-text); }
+
+    /* ---- disclosure ---- */
+    .disclosure { margin-top: 14px; border-top: 1px solid var(--fl-border); padding-top: 12px; }
+    .disclosure summary { cursor: pointer; color: var(--fl-signal); font-size: 13.5px; font-weight: 600; }
+    .disclosure[open] summary { margin-bottom: 6px; }
+
+    /* ---- vision saved row ---- */
+    .saved-row {
+      display: flex; align-items: center; gap: 10px; margin-top: 12px;
+      padding: 11px 13px; border-radius: var(--fl-r);
+      background: var(--fl-ok-bg); border: 1px solid color-mix(in srgb, var(--fl-ok) 45%, transparent);
+      color: var(--fl-ok-text); font-weight: 600;
+    }
+    .saved-row .chk { font-size: 15px; }
+    .saved-row button { margin-left: auto; }
+    ol.howto { margin: 10px 0 0; padding-left: 20px; color: var(--fl-text-dim); font-size: 13.5px; }
+    ol.howto li { margin: 6px 0; line-height: 1.5; }
+    ol.howto li::marker { color: var(--fl-text-faint); font-weight: 700; }
+    ol.howto strong { color: var(--fl-text); }
+    ol.howto code { background: var(--fl-surface-2); padding: 1px 5px; border-radius: 4px; color: var(--fl-text); }
+    /* "How to pair" mini-heading + dim-once-paired treatment for the steps. */
+    .howto-head { font-weight: 700; font-size: 13.5px; margin: 16px 0 0; color: var(--fl-text); }
+    #pair-howto.dimmed { opacity: .5; }
+    ul.unlocks { margin: 6px 0 4px; padding-left: 18px; color: var(--fl-text-dim); font-size: 13.5px; }
+    ul.unlocks li { margin: 4px 0; }
+    ul.unlocks b { color: var(--fl-text); }
+
+    /* ---- toggle rows ---- */
+    .toggle-row {
+      display: flex; align-items: center; gap: 11px; margin-top: 8px;
+      cursor: pointer; user-select: none;
+    }
+    .toggle-row input { width: auto; accent-color: var(--fl-signal); width: 17px; height: 17px; flex: none; }
+    .toggle-row .t-text { font-size: 14px; }
+    .toggle-row .t-text .t-sub { display: block; color: var(--fl-text-dim); font-size: 13px; margin-top: 1px; }
+
+    /* ---- site permission manager ---- */
+    .perm-list { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; }
+    .perm-item {
+      display: flex; align-items: center; gap: 10px;
+      padding: 9px 11px; border: 1px solid var(--fl-border); border-radius: var(--fl-r);
+      background: var(--fl-surface-2);
+    }
+    .perm-item .host { font-family: var(--fl-mono); font-size: 13px; color: var(--fl-text);
+      flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .perm-item .state { font-weight: 700; font-size: 12.5px; }
+    .perm-item .state.allow    { color: var(--fl-ok-text); }
+    .perm-item .state.readonly { color: var(--fl-read-text); }
+    .perm-item .state.block    { color: var(--fl-err-text); }
+    .perm-item select { width: auto; padding: 6px 8px; font-size: 12.5px; }
+    .perm-item .rm {
+      background: none; border: 0; padding: 0 2px; color: var(--fl-text-faint);
+      font-size: 16px; line-height: 1; width: auto; cursor: pointer;
+    }
+    .perm-item .rm:hover { color: var(--fl-err); }
+    .perm-empty { color: var(--fl-text-faint); font-size: 13.5px; padding: 6px 0; }
+    .perm-add { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+    .perm-add input { flex: 1; min-width: 180px; width: auto; }
+    .perm-add select { width: auto; }
+
+    /* ---- about links ---- */
+    .about-links { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 12px; }
   </style>
 </head>
 <body>
-  <h1>FastLink Connection</h1>
-  <p class="sub">FastLink reaches this browser two ways at once: the local broker (Claude Code / Desktop) and the cloud relay (claude.ai on the web driving your own browser). Both can run together — pairing the relay no longer turns off the broker.</p>
-
-  <div class="card">
-    <h2>Current status</h2>
-    <p class="status">Local broker: <span id="local-pill" class="pill off">…</span></p>
-    <p class="status">Cloud relay: <span id="relay-pill" class="pill off">…</span></p>
-    <p class="status muted" id="status-detail">Loading…</p>
-  </div>
-
-  <div class="card" id="pair-card">
-    <h2>Pair with the cloud relay</h2>
-    <p class="muted">One click signs you in to the relay and pairs this browser automatically — no codes to copy. You only pair once per browser; you can pair multiple browsers (Claude drives whichever was opened or paired most recently).</p>
-    <label for="relayBase">Relay base URL</label>
-    <input id="relayBase" type="url" placeholder="https://relay.ytx.app" value="https://relay.ytx.app" autocomplete="off" spellcheck="false" />
-    <div class="row">
-      <button id="signin-btn" class="primary">Sign in &amp; connect</button>
-      <a href="onboarding.html" target="_blank" class="muted">Open the welcome guide</a>
-    </div>
-    <div id="msg" class="msg"></div>
-
-    <details class="disclosure" style="margin-top:14px;">
-      <summary style="cursor:pointer;color:#2b6cee;font-weight:600;font-size:13px;">Have a pairing code instead?</summary>
-      <label for="code">Pairing code</label>
-      <input id="code" type="text" placeholder="K7Q2-9XBD" autocomplete="off" spellcheck="false" maxlength="20" />
-      <div class="row">
-        <button id="pair-btn" class="ghost">Pair with code</button>
-        <span class="muted">Applies live (or on reload).</span>
+  <div class="wrap">
+    <div class="head">
+      <span class="fl-mark" aria-hidden="true">
+        <svg viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <defs><linearGradient id="flmS" x1="14" y1="8" x2="50" y2="56" gradientUnits="userSpaceOnUse">
+            <stop offset="0" stop-color="#F5AE3C"/><stop offset="1" stop-color="#F3A52C"/></linearGradient></defs>
+          <rect x="3" y="3" width="58" height="58" rx="16" fill="#232D3F"/>
+          <rect x="3.75" y="3.75" width="56.5" height="56.5" rx="15.25" fill="none" stroke="url(#flmS)" stroke-width="1.5" stroke-opacity="0.55"/>
+          <path d="M37 9 L19 35 H30 L27 55 L46 27 H34 L37 9 Z" fill="url(#flmS)"/>
+          <circle cx="46" cy="27" r="3.2" fill="#232D3F" stroke="url(#flmS)" stroke-width="2"/>
+          <circle cx="19" cy="35" r="3.2" fill="#232D3F" stroke="url(#flmS)" stroke-width="2"/>
+        </svg>
+      </span>
+      <div>
+        <h1><span class="fl-wordmark">Fast<span class="lk">Link</span></span> Settings</h1>
+        <p class="lead">FastLink reaches this browser two ways at once: the local broker (Claude Code / Desktop) and the cloud relay (claude.ai on the web driving your own browser). Both can run together.</p>
       </div>
-    </details>
-  </div>
-
-  <div class="card">
-    <h2>Cloud relay control</h2>
-    <p class="muted">The local broker (Claude Code / Desktop) is always on by default. Use this to turn the cloud relay OFF and run the local broker only. Does not revoke the device on the relay server — re-enable by pairing again.</p>
-    <div class="row">
-      <button id="local-btn" class="ghost">Use local broker only</button>
+      <span id="version" class="ver"></span>
     </div>
-  </div>
 
-  <div class="card" id="advanced-card">
-    <h2>Advanced control <span id="dbg-pill" class="pill off">…</span></h2>
-    <p class="muted">FastLink works out of the box with DOM-based reading, clicking, and form-filling. <strong>Advanced control</strong> grants Chrome's debugger permission, which adds: precise coordinate clicks/typing (vision tier), running scripts on the page, and <strong>capturing tabs that aren’t in front</strong> (so Claude can drive a background tab while you stay on the chat). Grant it only if you want those — you can revoke it anytime.</p>
-    <div class="row">
-      <button id="dbg-btn" class="ghost">Enable advanced control</button>
-      <span class="muted" id="dbg-detail"></span>
+    <!-- ============ GROUP: CONNECTION ============ -->
+    <section class="group">
+      <div class="group-head">
+        <span class="group-label">Connection</span>
+        <span class="group-rule"></span>
+      </div>
+      <div class="group-grid">
+
+      <!-- 1. CONNECTION (lead) -->
+      <div class="card lead span-2">
+        <h2>Connection</h2>
+      <div class="trow">
+        <div class="trow-main">
+          <span class="fl-dot" id="local-dot"></span>
+          <span class="trow-title">Local broker</span>
+          <span id="local-pill" class="pill off">…</span>
+        </div>
+        <div class="trow-sub" id="local-detail">Localhost broker (Claude Code / Desktop).</div>
+      </div>
+      <div class="trow">
+        <div class="trow-main">
+          <span class="fl-dot" id="relay-dot"></span>
+          <span class="trow-title">Cloud relay</span>
+          <span id="relay-pill" class="pill off">…</span>
+        </div>
+        <div class="trow-sub" id="status-detail">Loading…</div>
+      </div>
+
+      <div class="row" id="controls">
+        <button id="pause-btn" class="stop">⏸ Stop driving</button>
+        <button id="disconnect-btn" class="ghost" style="display:none;">Disconnect relay</button>
+        <button id="local-btn" class="ghost">Use local broker only</button>
+      </div>
     </div>
+
+      <!-- 1b. PAIR -->
+      <div class="card span-2" id="pair-card">
+      <h2>Pair with the cloud relay</h2>
+      <p class="desc">Pairing lets <strong>claude.ai on the web</strong> drive this browser. One click signs you in to the relay and pairs this browser automatically — no codes to copy. You only pair once per browser; you can pair multiple browsers (Claude drives whichever was opened or paired most recently).</p>
+
+      <!-- Paired confirmation — shown by options.js when this browser has a device token. -->
+      <div id="pair-confirm" class="saved-row" style="display:none;">
+        <span class="chk">✓</span>
+        <span id="pair-confirm-text">This browser is paired with the relay.</span>
+      </div>
+
+      <p class="howto-head">How to pair</p>
+      <ol class="howto" id="pair-howto">
+        <li><strong>Click “Sign in &amp; connect” below.</strong> A relay sign-in window opens (sign in with Google). On success this browser is paired automatically and a device token is saved here — there are no codes to copy. You only do this once per browser.</li>
+        <li><strong>No window opened, or pairing a second Chrome profile?</strong> Open <strong>“Have a pairing code instead?”</strong> further down, get a one-time code on the relay page, and paste it into the field.</li>
+        <li><strong>Add FastLink in claude.ai.</strong> Go to <strong>Settings → Connectors → Add custom connector</strong>, paste <code>https://relay.ytx.app/mcp</code>, save, then click <strong>Connect</strong> and sign in with the <strong>same account</strong>.</li>
+        <li><strong>Start driving.</strong> Open a chat in claude.ai and ask Claude to use FastLink on your active tab.</li>
+      </ol>
+
+      <label for="relayBase">Relay base URL</label>
+      <input id="relayBase" type="url" placeholder="https://relay.ytx.app" value="https://relay.ytx.app" autocomplete="off" spellcheck="false" />
+      <div class="row">
+        <button id="signin-btn" class="primary">Sign in &amp; connect</button>
+        <a href="onboarding.html" target="_blank" class="linkbtn">Open the welcome guide →</a>
+      </div>
+      <div id="msg" class="msg"></div>
+
+      <details class="disclosure">
+        <summary>Have a pairing code instead?</summary>
+        <p class="fine">Only needed if one-click sign-in didn't work, or to pair a second Chrome profile. Sign in on the relay page to get a one-time code, then paste it here.</p>
+        <label for="code">Pairing code</label>
+        <input id="code" type="text" placeholder="K7Q2-9XBD" autocomplete="off" spellcheck="false" maxlength="20" />
+        <div class="row">
+          <button id="pair-btn" class="ghost small">Pair with code</button>
+          <span class="fine">Applies live (or on reload).</span>
+        </div>
+      </details>
+    </div>
+
+      </div><!-- /group-grid -->
+    </section>
+
+    <!-- ============ GROUP: CAPABILITIES ============ -->
+    <section class="group">
+      <div class="group-head">
+        <span class="group-label">Capabilities</span>
+        <span class="group-rule"></span>
+      </div>
+      <div class="group-grid">
+
+      <!-- 2. VISION & SPEED (Gemini key) -->
+      <div class="card span-2" id="vision-card">
+      <h2>Vision &amp; speed <span id="vision-pill" class="pill rec badge">Recommended</span></h2>
+      <p class="desc">Add your free Google Gemini key to unlock FastLink's fastest, most capable tiers. This is core to a great experience — the key is stored on the relay (device-token authed), never typed into a chat.</p>
+      <ul class="unlocks">
+        <li><b>Vision tier</b> — drive canvas, iframe, and other non-DOM UIs; screenshot-based locating &amp; clicking; one-shot vision form-fill.</li>
+        <li><b>Scout</b> — instant page pre-reads that let Claude plan in one pass, so tasks run much faster.</li>
+      </ul>
+
+      <!-- field view (no key on file) -->
+      <div id="gemini-field">
+        <label for="geminiKey">Gemini API key</label>
+        <input id="geminiKey" type="password" placeholder="AIza…" autocomplete="off" spellcheck="false" />
+        <div class="row">
+          <button id="gemini-btn" class="primary small">Save key</button>
+          <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener" class="linkbtn">Get a free key →</a>
+        </div>
+        <ol class="howto">
+          <li>Open <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener"><strong>Google AI Studio</strong></a>.</li>
+          <li>Sign in and click <strong>Create API key</strong> (any project works).</li>
+          <li>Copy the key (<code>AIza…</code>), paste it above, and click <strong>Save key</strong>.</li>
+        </ol>
+        <p class="fine">Requires a paired browser (above). No key? FastLink still works in DOM-only mode — but you'll want this for canvas/iframe sites and the speed boost.</p>
+      </div>
+
+      <!-- saved view (key on file) -->
+      <div id="gemini-saved" class="saved-row" style="display:none;">
+        <span class="chk">✓</span>
+        <span>Vision enabled — key saved</span>
+        <button id="gemini-change" class="ghost small">Change key</button>
+      </div>
+      <div id="gemini-msg" class="msg"></div>
+    </div>
+
+      </div><!-- /group-grid -->
+    </section>
+
+    <!-- ============ GROUP: OPERATION ============ -->
+    <section class="group">
+      <div class="group-head">
+        <span class="group-label">Operation</span>
+        <span class="group-rule"></span>
+      </div>
+      <div class="group-grid">
+
+      <!-- 3. ADVANCED CONTROL -->
+      <div class="card span-2" id="advanced-card">
+      <h2>Advanced control <span id="dbg-pill" class="pill off badge">…</span></h2>
+      <p class="desc">FastLink works out of the box with DOM-based reading, clicking, and form-filling. <strong>Advanced control</strong> is an on/off setting (default on) that enables precise coordinate clicks/typing (vision tier), running scripts on the page, and <strong>capturing tabs that aren't in front</strong> (so Claude can drive a background tab while you stay on the chat). Turn it off to limit FastLink to DOM-based reading and form-filling.</p>
+      <p class="fine">This is a setting, not a Chrome permission grant — toggling it doesn't add or remove any browser permission.</p>
+      <div class="row">
+        <button id="dbg-btn" class="ghost">Enable advanced control</button>
+        <span class="fine" id="dbg-detail"></span>
+      </div>
+    </div>
+
+      <!-- 4. BROKER SLOT -->
+      <div class="card" id="install-card">
+      <h2>Broker slot <span class="badge fine" style="font-weight:400;">optional</span></h2>
+      <p class="desc">Leave this on <strong>Primary</strong> unless you run FastLink in a <strong>second Chrome profile</strong> on the same machine. Each slot uses its own broker port (Primary: 9876, Secondary: 9877) so two profiles don't fight over one port. Set the second profile to <strong>Secondary</strong>.</p>
+      <label for="install-select">This browser's slot</label>
+      <select id="install-select">
+        <option value="primary">Primary (default · port 9876)</option>
+        <option value="secondary">Secondary (2nd Chrome profile · port 9877)</option>
+      </select>
+      <div class="row">
+        <span class="fine" id="install-detail">Switching reloads FastLink to reconnect on the new port.</span>
+      </div>
+    </div>
+
+      <!-- 5. NOTIFICATIONS -->
+      <div class="card" id="notify-card">
+      <h2>Notifications</h2>
+      <p class="desc">Get a desktop alert when Claude finishes a task or appears to be stuck, so you don't have to watch the tab.</p>
+      <label class="toggle-row">
+        <input type="checkbox" id="notify-toggle" />
+        <span class="t-text">Desktop alerts when Claude finishes or gets stuck
+          <span class="t-sub">Same setting as the toolbar popup's toggle.</span>
+        </span>
+      </label>
+    </div>
+
+      </div><!-- /group-grid -->
+    </section>
+
+    <!-- ============ GROUP: PERMISSIONS & INFO ============ -->
+    <section class="group">
+      <div class="group-head">
+        <span class="group-label">Permissions &amp; info</span>
+        <span class="group-rule"></span>
+      </div>
+      <div class="group-grid">
+
+      <!-- 6. SITE PERMISSIONS -->
+      <div class="card" id="perm-card">
+      <h2>Site permissions</h2>
+      <p class="desc">Per-origin consent for the cloud relay. Each site Claude touches can be set to <strong>Allow</strong> (read &amp; act), <strong>Read-only</strong> (read but don't act), or <strong>Block</strong>. Changes sync to the relay; removing a row clears the local record.</p>
+      <div id="perm-list" class="perm-list"></div>
+      <div class="perm-add">
+        <input id="perm-origin" type="url" placeholder="https://example.com" autocomplete="off" spellcheck="false" />
+        <select id="perm-mode">
+          <option value="allow">Allow</option>
+          <option value="readonly">Read-only</option>
+          <option value="block">Block</option>
+        </select>
+        <button id="perm-add-btn" class="ghost small">Add / set</button>
+      </div>
+      <div id="perm-msg" class="msg"></div>
+    </div>
+
+      <!-- 7. ABOUT -->
+      <div class="card" id="about-card">
+      <h2>About</h2>
+      <p class="desc">FastLink <span id="about-version">—</span> — bridges Claude to your active Chrome tab.</p>
+      <div class="row">
+        <button id="reload-btn" class="ghost">Reload extension</button>
+      </div>
+      <div class="about-links">
+        <a href="onboarding.html" target="_blank" class="linkbtn">Open the welcome guide →</a>
+        <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener" class="linkbtn">Get a Gemini key →</a>
+      </div>
+    </div>
+
+      </div><!-- /group-grid -->
+    </section>
   </div>
 
   <script type="module" src="options.js"></script>

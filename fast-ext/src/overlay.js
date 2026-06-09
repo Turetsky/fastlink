@@ -1,21 +1,38 @@
-// FastLink activity overlay — fixed top-right panel that shows each tool call
-// as it runs. Always on, content script in ISOLATED world. Speed principle:
-// every message arrives via fire-and-forget chrome.tabs.sendMessage from the
-// background, so nothing here ever blocks the action path.
+// FastLink activity overlay — the SINGLE fixed top-right panel. It shows each
+// tool call as it runs AND (folded in from the former transcriptOverlay.js, the
+// old second box) the live claude.ai transcript, current-action, and permission
+// Allow/Deny block while the relay is driving. Always on, content script in
+// ISOLATED world. Speed principle: every message arrives via fire-and-forget
+// chrome.tabs.sendMessage from the background, so nothing here ever blocks the
+// action path.
+//
+// Two message streams feed this ONE host:
+//   • {fastlink:'event', phase:start|heartbeat|end} — tool-call rows (both
+//     transports; only ever reaches the DRIVEN tab).
+//   • {fastlink:'transcript', transcript, activity} — scraped transcript +
+//     permission + activity summary, pushed onto the user's active tab while a
+//     relay session drives. {active:false} tears the transcript section down.
+// There is no standalone idle/empty-state box: the transcript section only
+// appears with real content (or a running/stuck session) and the whole host is
+// removed when idle. The "waiting / unavailable" empty-state lives ONLY in the
+// docked side panel.
 
 (() => {
-  // Re-injection (e.g. background re-injecting after an extension reload) must
-  // REBUILD, not no-op — the previous instance's chrome.runtime context is dead
-  // and its onMessage listener can never fire again. Tear down the old host so
-  // this fresh, live-context instance takes over.
-  if (window.__fastlinkOverlayInstalled) {
-    try { document.getElementById('__fastlink_overlay_host__')?.remove(); } catch {}
-    try { window.__fastlinkOverlayTeardown?.(); } catch {}
-  }
+  // Re-injection (e.g. background re-injecting after a worker restart / extension
+  // reload) must REBUILD, not no-op — the previous instance's chrome.runtime
+  // context is dead and its onMessage listener can never fire again. Always remove
+  // any existing host FIRST — unconditionally, not just when __fastlinkOverlayInstalled
+  // is set: after a full extension reload the fresh script runs in a NEW isolated
+  // world where that flag is unset, but the orphan's host DOM node still sits in the
+  // page. Removing by id guarantees re-injection cleanly REPLACES the orphan instead
+  // of stacking a second panel on top of the frozen one.
+  try { document.getElementById('__fastlink_overlay_host__')?.remove(); } catch {}
+  try { window.__fastlinkOverlayTeardown?.(); } catch {}
   window.__fastlinkOverlayInstalled = true;
 
   const HOST_ID = '__fastlink_overlay_host__';
   const MAX_ROWS = 8;
+  const OV_MAX_LINES = 7;   // transcript section is small — show only recent lines
   const FADE_AFTER_MS = 4000;
   const REMOVE_AFTER_MS = 6000;
   // Tear the whole panel off the page this long after the LAST tool finishes
@@ -30,6 +47,25 @@
   let hdrDot = null;
   let dismissTimer = null;
   const rows = new Map(); // id -> { rowEl, args, label, timers }
+
+  // Transcript/permission section — folded in from the former transcriptOverlay.js
+  // (the second box). Populated by {fastlink:'transcript'} pushes from background
+  // during an active relay session; cleared when the relay stops driving.
+  let permEl = null;
+  let curEl = null;
+  let msgEl = null;
+  let transcriptActive = false;   // a live relay transcript is keeping the box up
+  let tData = null;               // latest transcript { available, text, structured, permission }
+  let tActivity = null;           // latest activity summary { state, label, secs, last }
+
+  // Staleness watchdog. The background worker pings us (start / heartbeat / end)
+  // while it's alive and working. If a row is still "running" but no ping has
+  // arrived for STALE_MS, the worker driving this overlay died mid-action — so we
+  // neutralize the frozen row instead of showing "▶ …" forever. A genuinely long
+  // action keeps getting heartbeats, so this never false-positives on it.
+  const STALE_MS = 8000;
+  let lastMsgAt = performance.now();
+  let staleNeutral = false;
 
   // Map a raw tool name to a human-readable present-tense verb the user can
   // grok at a glance. Anything unmapped falls back to the de-prefixed name.
@@ -61,36 +97,79 @@
     host.style.cssText = 'all:initial;position:fixed;top:12px;right:12px;z-index:2147483647;pointer-events:none;';
     shadow = host.attachShadow({ mode: 'closed' });
     const style = document.createElement('style');
+    // Palette literals mirror src/theme.css (DARK block) — keep in sync:
+    //   signal #F5AE3C · ok #3FBE7D · err #F26A6A · text #E9ECF2 · dim #9BA5B5
     style.textContent = `
       :host, * { box-sizing:border-box; }
       .panel {
         font:12px/1.35 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
-        color:#e7e9ee;
-        background:rgba(20,22,28,0.72);
-        backdrop-filter: blur(8px);
-        -webkit-backdrop-filter: blur(8px);
+        color:#E9ECF2;
+        background:rgba(22,28,39,0.80);
+        backdrop-filter: blur(10px);
+        -webkit-backdrop-filter: blur(10px);
         border:1px solid rgba(255,255,255,0.08);
-        border-radius:10px;
-        box-shadow:0 8px 24px rgba(0,0,0,0.35);
+        border-radius:12px;
+        box-shadow:0 8px 24px rgba(0,0,0,0.4);
         padding:8px 10px;
         min-width:240px;
         max-width:360px;
         pointer-events:auto;
       }
-      .hdr { display:flex; align-items:center; gap:6px; margin-bottom:6px; opacity:0.92; }
-      .dot { width:8px; height:8px; border-radius:50%; background:#5cc8ff; box-shadow:0 0 6px #5cc8ff; flex:none; }
-      .dot.run  { background:#5cc8ff; box-shadow:0 0 6px #5cc8ff; animation:flpulse 1s ease-in-out infinite; }
-      .dot.idle { background:#6dd58c; box-shadow:0 0 6px #6dd58c; animation:none; }
+      .hdr { display:flex; align-items:center; gap:7px; margin-bottom:6px; opacity:0.95; }
+      .mark {
+        flex:none; width:16px; height:16px; border-radius:5px;
+        background:linear-gradient(135deg,#F5AE3C,#F5AE3C);
+        box-shadow:inset 0 1px 0 rgba(255,255,255,0.25);
+      }
+      .dot { width:8px; height:8px; border-radius:50%; background:#F5AE3C; box-shadow:0 0 6px #F5AE3C; flex:none; }
+      .dot.run  { background:#F5AE3C; box-shadow:0 0 6px #F5AE3C; animation:flpulse 1s ease-in-out infinite; }
+      .dot.idle { background:#3FBE7D; box-shadow:0 0 6px #3FBE7D; animation:none; }
+      .dot.stuck{ background:#F0863A; box-shadow:0 0 6px #F0863A; animation:flpulse 1.4s ease-in-out infinite; }
       @keyframes flpulse { 0%,100%{opacity:1;} 50%{opacity:0.25;} }
       .ttl { font-weight:600; letter-spacing:0.2px; }
       .status {
         display:flex; align-items:center; gap:4px;
         margin-bottom:6px; padding:3px 6px; border-radius:6px;
         font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
-        background:rgba(255,255,255,0.05); color:#9aa3b2;
+        background:rgba(255,255,255,0.05); color:#9BA5B5;
       }
-      .status.working { color:#bcd4ff; background:rgba(92,200,255,0.12); }
-      .status.done    { color:#6dd58c; background:rgba(109,213,140,0.12); }
+      .status.working { color:#FAC56B; background:rgba(245,174,60,0.14); }
+      .status.done    { color:#6FD89A; background:rgba(95,207,138,0.14); }
+      .status.stuck   { color:#f0b070; background:rgba(235,148,80,0.16); }
+      /* ---- transcript / permission section (folded in from transcriptOverlay) -- */
+      .perm {
+        border:1px solid rgba(240,134,58,0.5); background:rgba(240,134,58,0.12);
+        border-radius:8px; padding:7px 8px; margin-bottom:6px;
+        display:flex; flex-direction:column; gap:6px;
+      }
+      .perm .q { color:#FAC56B; font-weight:600; font-size:11px; line-height:1.35; }
+      .perm .hint { color:#9BA5B5; font-size:10px; }
+      .perm .btns { display:flex; gap:6px; }
+      .perm button {
+        flex:1; cursor:pointer; font:inherit; font-size:11px; font-weight:600;
+        border-radius:6px; padding:5px 8px; border:1px solid rgba(255,255,255,0.12);
+      }
+      .perm button.allow { background:#3FBE7D; color:#06130c; border-color:transparent; }
+      .perm button.deny  { background:rgba(255,255,255,0.08); color:#E9ECF2; }
+      .perm button:hover { filter:brightness(1.08); }
+      .cur {
+        font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:11px;
+        color:#0c1018; background:#F5AE3C; font-weight:600;
+        border-radius:5px; padding:3px 7px; margin-bottom:6px; align-self:flex-start; max-width:100%;
+        white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+      }
+      .cur.hidden { display:none; }
+      .msg {
+        color:#d6dae3; background:rgba(255,255,255,0.04);
+        border-radius:6px; padding:6px 8px; margin-bottom:6px;
+        max-height:11em; overflow:hidden;
+        display:flex; flex-direction:column; gap:5px;
+        word-break:break-word;
+      }
+      .ln { white-space:pre-wrap; }
+      .ln.bullet { padding-left:10px; position:relative; }
+      .ln.bullet::before { content:'•'; position:absolute; left:0; color:#9BA5B5; }
+      .ln.tool { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:11px; color:#9BD0F5; opacity:0.95; }
       .list { display:flex; flex-direction:column; gap:4px; max-height:60vh; overflow:hidden; }
       .row {
         display:flex; align-items:baseline; gap:6px;
@@ -100,24 +179,28 @@
         opacity:1;
       }
       .row.fade { opacity:0.35; }
-      .row.run  { box-shadow: inset 2px 0 0 #5cc8ff; }
-      .row.ok   { box-shadow: inset 2px 0 0 #6dd58c; }
-      .row.err  { box-shadow: inset 2px 0 0 #ff6b6b; }
-      .tool { color:#c8d2ff; font-weight:600; white-space:nowrap; }
-      .meta { color:#9aa3b2; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-      .ms   { color:#7d8696; font-variant-numeric:tabular-nums; }
-      .empty { color:#7d8696; font-style:italic; padding:2px 6px; }
+      .row.run  { box-shadow: inset 2px 0 0 #F5AE3C; }
+      .row.ok   { box-shadow: inset 2px 0 0 #3FBE7D; }
+      .row.err  { box-shadow: inset 2px 0 0 #F26A6A; }
+      .tool { color:#E9ECF2; font-weight:600; white-space:nowrap; }
+      .meta { color:#9BA5B5; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+      .ms   { color:#5F6B7E; font-variant-numeric:tabular-nums; }
+      .empty { color:#5F6B7E; font-style:italic; padding:2px 6px; }
     `;
     const panel = document.createElement('div');
     panel.className = 'panel';
-    panel.innerHTML = `<div class="hdr"><span class="dot"></span><span class="ttl">Claude is driving this tab</span></div><div class="status"></div><div class="list"></div>`;
+    panel.innerHTML = `<div class="hdr"><span class="mark"></span><span class="dot"></span><span class="ttl">Claude is driving this tab</span></div><div class="status"></div><div class="perm" style="display:none"></div><div class="cur hidden"></div><div class="msg" style="display:none"></div><div class="list"></div>`;
     shadow.appendChild(style);
     shadow.appendChild(panel);
     listEl = panel.querySelector('.list');
     statusEl = panel.querySelector('.status');
     hdrDot = panel.querySelector('.dot');
+    permEl = panel.querySelector('.perm');
+    curEl = panel.querySelector('.cur');
+    msgEl = panel.querySelector('.msg');
     document.documentElement.appendChild(host);
     updateStatus();
+    renderTranscript();   // paint any transcript content captured before mount
   };
 
   // Reflect live driving state in the header so a user glancing over from the
@@ -126,21 +209,58 @@
   // finished, nothing running), and connected (panel up, nothing yet).
   const updateStatus = () => {
     if (!statusEl) return;
+    if (staleNeutral) {
+      statusEl.textContent = '↻ reconnecting… (refresh tab if this persists)';
+      statusEl.className = 'status';
+      if (hdrDot) hdrDot.className = 'dot idle';
+      return;
+    }
+    // Local tool-call rows (direct, low-latency) take priority when one is live.
     let running = null;
     for (const e of rows.values()) if (e.rowEl.classList.contains('run')) running = e;
     if (running) {
       statusEl.textContent = '▶ ' + running.label;
       statusEl.className = 'status working';
       if (hdrDot) hdrDot.className = 'dot run';
-    } else if (rows.size) {
+      return;
+    }
+    // No local row running — fall back to the relay activity summary, so a
+    // NON-driven active tab (which gets transcript pushes but no event rows) still
+    // shows a live running/stuck/idle status.
+    const a = tActivity;
+    if (a && a.state === 'stuck') {
+      statusEl.textContent = `⚠ possibly stuck — ${a.label || ''} (${a.secs ?? 0}s)`;
+      statusEl.className = 'status stuck';
+      if (hdrDot) hdrDot.className = 'dot stuck';
+      return;
+    }
+    if (a && a.state === 'running') {
+      statusEl.textContent = `▶ ${a.label || 'working'} (${a.secs ?? 0}s)`;
+      statusEl.className = 'status working';
+      if (hdrDot) hdrDot.className = 'dot run';
+      return;
+    }
+    if (rows.size) {
       statusEl.textContent = '✓ Done — idle';
       statusEl.className = 'status done';
       if (hdrDot) hdrDot.className = 'dot idle';
-    } else {
-      statusEl.textContent = 'Connected — waiting for Claude';
+      return;
+    }
+    if (a && a.last) {
+      statusEl.textContent = `✓ idle — last: ${a.last.action} ${a.last.ok ? '✓' : '✗'}`;
+      statusEl.className = 'status done';
+      if (hdrDot) hdrDot.className = 'dot idle';
+      return;
+    }
+    if (transcriptActive) {
+      statusEl.textContent = 'idle';
       statusEl.className = 'status';
       if (hdrDot) hdrDot.className = 'dot idle';
+      return;
     }
+    statusEl.textContent = 'Connected — waiting for Claude';
+    statusEl.className = 'status';
+    if (hdrDot) hdrDot.className = 'dot idle';
   };
 
   const fmtMeta = (action, args) => {
@@ -214,33 +334,195 @@
 
   const cancelDismiss = () => { if (dismissTimer) { clearTimeout(dismissTimer); dismissTimer = null; } };
 
-  // Remove the entire overlay host (header dot + list) and reset state so the
-  // NEXT tool run re-mounts a fresh panel via ensureMounted.
+  // Tear the whole host off the page and null every element ref so the NEXT tool
+  // run / transcript push re-mounts a fresh panel via ensureMounted.
+  const destroyHost = () => {
+    try { host?.remove(); } catch {}
+    host = shadow = listEl = statusEl = hdrDot = permEl = curEl = msgEl = null;
+  };
+
+  // Remove the entire overlay host (header dot + list + transcript) and reset
+  // state so the NEXT tool run re-mounts a fresh panel via ensureMounted. A live
+  // relay transcript keeps the box up — only the relay going inactive (handled in
+  // onTranscript) tears it down then.
   const scheduleDismiss = () => {
     cancelDismiss();
+    if (transcriptActive) return;   // a live relay transcript keeps the single box up
     dismissTimer = setTimeout(() => {
       dismissTimer = null;
       clearAll();
-      try { host?.remove(); } catch {}
-      host = shadow = listEl = null;
+      destroyHost();
     }, DISMISS_AFTER_MS);
   };
 
+  // ---- transcript / permission rendering (folded in from transcriptOverlay) ---
+  // Whether the latest transcript/activity is worth surfacing the box for. We
+  // never mount a standalone idle/empty box: real content (lines/permission/
+  // current-action) OR a genuinely running/stuck relay session is required.
+  const transcriptWorthShowing = () => {
+    const t = tData, a = tActivity;
+    if (t) {
+      if (t.permission && t.permission.present) return true;
+      if (t.structured && t.structured.currentAction) return true;
+      if (t.available && t.structured && Array.isArray(t.structured.lines) && t.structured.lines.length) return true;
+      if (t.available && t.text) return true;
+    }
+    if (a && (a.state === 'running' || a.state === 'stuck')) return true;
+    return false;
+  };
+
+  const clearTranscriptSections = () => {
+    if (permEl) { permEl.style.display = 'none'; permEl.textContent = ''; }
+    if (curEl) curEl.className = 'cur hidden';
+    if (msgEl) { msgEl.style.display = 'none'; msgEl.textContent = ''; }
+  };
+
+  const renderTranscript = () => {
+    if (!permEl) return;            // not mounted yet
+    renderPermission(tData && tData.permission);
+    const cur = tData && tData.structured && tData.structured.currentAction;
+    if (curEl) {
+      if (cur && !staleNeutral) { curEl.textContent = '▸ ' + cur; curEl.className = 'cur'; }
+      else curEl.className = 'cur hidden';
+    }
+    renderMessage(tData);
+  };
+
+  // Render the latest turn as discrete lines (prose / bullet / tool). Small box,
+  // so keep only the most recent OV_MAX_LINES. NO empty-state — when there's
+  // nothing available the section hides entirely (the empty-state lives only in
+  // the docked side panel).
+  const renderMessage = (t) => {
+    if (!msgEl) return;
+    const lines = t && t.structured && Array.isArray(t.structured.lines) ? t.structured.lines : null;
+    const hasLines = !!(lines && lines.length);
+    if (staleNeutral || !t || !t.available || (!hasLines && !t.text)) {
+      msgEl.style.display = 'none';
+      msgEl.textContent = '';
+      return;
+    }
+    msgEl.style.display = '';
+    msgEl.className = 'msg';
+    if (!hasLines) { msgEl.textContent = t.text; return; }   // back-compat: raw text only
+    msgEl.textContent = '';
+    const shown = lines.slice(-OV_MAX_LINES);
+    if (lines.length > shown.length) {
+      const more = document.createElement('div');
+      more.className = 'ln tool';
+      more.textContent = `… (+${lines.length - shown.length} earlier)`;
+      msgEl.appendChild(more);
+    }
+    for (const ln of shown) {
+      const d = document.createElement('div');
+      d.className = 'ln ' + (ln.kind || 'prose');
+      d.textContent = ln.text || '';
+      msgEl.appendChild(d);
+    }
+  };
+
+  // Permission ask + Allow/Deny. If not actionable (couldn't grab the real
+  // buttons) we still SHOW it and tell the user to approve inside claude.ai.
+  const renderPermission = (perm) => {
+    if (!permEl) return;
+    if (staleNeutral || !perm || !perm.present) { permEl.style.display = 'none'; permEl.textContent = ''; return; }
+    permEl.style.display = '';
+    permEl.textContent = '';
+    const q = document.createElement('div');
+    q.className = 'q';
+    q.textContent = 'Claude is asking to use FastLink tools.';
+    permEl.appendChild(q);
+    if (perm.actionable) {
+      const btns = document.createElement('div');
+      btns.className = 'btns';
+      const allow = document.createElement('button');
+      allow.className = 'allow';
+      allow.textContent = perm.allowText || 'Allow';
+      allow.addEventListener('click', () => respondPermission('allow'));
+      const deny = document.createElement('button');
+      deny.className = 'deny';
+      deny.textContent = perm.denyText || 'Deny';
+      deny.addEventListener('click', () => respondPermission('deny'));
+      btns.appendChild(allow); btns.appendChild(deny);
+      permEl.appendChild(btns);
+    } else {
+      const hint = document.createElement('div');
+      hint.className = 'hint';
+      hint.textContent = 'Approve it in the claude.ai tab to continue.';
+      permEl.appendChild(hint);
+    }
+  };
+
+  const respondPermission = (decision) => {
+    try {
+      chrome.runtime.sendMessage({ type: 'fastlink:permission-respond', decision }, () => void chrome.runtime.lastError);
+    } catch {}
+    // Optimistically hide; a fresh scrape will confirm it cleared.
+    if (permEl) { permEl.style.display = 'none'; permEl.textContent = ''; }
+  };
+
+  // Handle a {fastlink:'transcript'} push from background. {active:false} means
+  // the relay stopped driving — tear the transcript section down (and the whole
+  // box if nothing else keeps it up). Otherwise fold the content into the box.
+  const onTranscript = (msg) => {
+    if (msg.active === false) {
+      transcriptActive = false;
+      tData = null;
+      tActivity = null;
+      clearTranscriptSections();
+      updateStatus();
+      if (!anyRunning()) scheduleDismiss();
+      return;
+    }
+    // A fresh push proves the worker is alive: refresh liveness + drop stale state.
+    lastMsgAt = performance.now();
+    staleNeutral = false;
+    tData = msg.transcript || tData;
+    tActivity = msg.activity ?? tActivity;
+    if (!transcriptWorthShowing()) {
+      // Nothing meaningful (idle, no content) — never force an idle box open. If a
+      // box is up only because the relay WAS active, re-arm the dismiss now that
+      // it isn't (scheduleDismiss no-ops while real rows are still running).
+      transcriptActive = false;
+      if (host) {
+        clearTranscriptSections();
+        updateStatus();
+        if (!anyRunning()) scheduleDismiss();
+      }
+      return;
+    }
+    transcriptActive = true;
+    cancelDismiss();
+    ensureMounted();
+    renderTranscript();
+    updateStatus();
+  };
+
   const onMessage = (msg) => {
-    if (!msg || msg.fastlink !== 'event') return;
+    if (!msg) return;
+    if (msg.fastlink === 'transcript') { onTranscript(msg); return; }
+    if (msg.fastlink !== 'event') return;
+    // Any ping (start / heartbeat / end) proves the worker is alive: refresh the
+    // liveness clock and drop a prior stale state so a revived session shows fresh.
+    lastMsgAt = performance.now();
+    if (staleNeutral) { staleNeutral = false; updateStatus(); }
+    if (msg.phase === 'heartbeat') return;       // liveness ping only — no row
     if (msg.phase === 'start') ensureRow(msg.id, msg.action, msg.args);
     else if (msg.phase === 'end') completeRow(msg.id, msg.ok, msg.error);
   };
   chrome.runtime.onMessage.addListener(onMessage);
 
-  // Wipe every row and cancel its fade/remove timers. Used on page transitions
-  // so nothing from a prior run survives.
+  // Wipe every row + transcript and cancel its fade/remove timers. Used on page
+  // transitions so nothing from a prior run survives.
   const clearAll = () => {
     for (const entry of rows.values()) {
       entry.timers.forEach(clearTimeout);
       try { entry.rowEl.remove(); } catch {}
     }
     rows.clear();
+    transcriptActive = false;
+    tData = null;
+    tActivity = null;
+    clearTranscriptSections();
     updateStatus();
   };
 
@@ -254,28 +536,59 @@
   window.addEventListener('pagehide', onPageHide);
   window.addEventListener('pageshow', onPageShow);
 
+  // Drop any 'run' rows and flip to a neutral note when the worker goes silent
+  // mid-action (it was killed, or the extension reloaded). Then let the normal
+  // dismiss timer fade the panel out, so we never sit frozen on "▶ …".
+  const markStale = () => {
+    for (const [id, e] of rows) {
+      if (e.rowEl.classList.contains('run')) {
+        e.timers.forEach(clearTimeout);
+        try { e.rowEl.remove(); } catch {}
+        rows.delete(id);
+      }
+    }
+    staleNeutral = true;
+    transcriptActive = false;      // let the reconnect note dismiss; a fresh push revives it
+    clearTranscriptSections();     // drop stale transcript content during reconnect
+    ensureMounted();
+    updateStatus();
+    scheduleDismiss();
+  };
+  // A relay session can be live on a NON-driven active tab too (transcript pushes,
+  // no event rows). Treat a running/stuck activity summary as "believed running"
+  // so the watchdog also catches a worker dying during a transcript-only session.
+  const isTranscriptActiveState = () => !!tActivity && (tActivity.state === 'running' || tActivity.state === 'stuck');
+  const staleWatch = setInterval(() => {
+    if (staleNeutral) return;
+    if (!anyRunning() && !isTranscriptActiveState()) return;   // only while we believe work is in flight
+    if (performance.now() - lastMsgAt > STALE_MS) markStale();
+  }, 2000);
+
   // Self-heal: when the extension is reloaded, this content script is orphaned —
   // chrome.runtime.id starts throwing "Extension context invalidated" and no new
-  // tool events can arrive. Detect that and show a one-time "reload tab" hint so
-  // the panel never silently freezes on a stale row. Stop the watcher after.
+  // tool events can arrive. Show a TRANSIENT reconnecting note (not a permanent
+  // stale line) and then remove the whole panel: the dead context can't receive
+  // updates, and the manifest content script re-injects on the next page load.
   const ctxWatch = setInterval(() => {
     let alive = true;
     try { alive = !!chrome.runtime?.id; } catch { alive = false; }
     if (alive) return;
     clearInterval(ctxWatch);
+    try { clearInterval(staleWatch); } catch {}
     try {
+      clearAll();                 // drop frozen rows so no stale "▶ …" lingers
+      staleNeutral = true;
       ensureMounted();
-      const note = document.createElement('div');
-      note.className = 'empty';
-      note.textContent = '↻ extension reloaded — refresh this tab to resume';
-      listEl.appendChild(note);
+      updateStatus();
     } catch {}
+    setTimeout(() => { destroyHost(); }, 6000);
   }, 1500);
 
   // Allow a future re-injection to cleanly replace this instance.
   window.__fastlinkOverlayTeardown = () => {
     try { cancelDismiss(); } catch {}
     try { clearInterval(ctxWatch); } catch {}
+    try { clearInterval(staleWatch); } catch {}
     try { chrome.runtime.onMessage.removeListener(onMessage); } catch {}
     try { window.removeEventListener('pagehide', onPageHide); } catch {}
     try { window.removeEventListener('pageshow', onPageShow); } catch {}

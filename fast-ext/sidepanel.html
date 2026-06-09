@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en" data-fl-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FastLink — Live transcript</title>
+  <!-- Brand fonts (match fastlink-site): Bricolage Grotesque + Hanken Grotesk + JetBrains Mono -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700;12..96,800&family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="src/theme.css" />
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0; height: 100%;
+      font: 13px/1.45 var(--fl-font);
+      color: var(--fl-text);
+      background: var(--fl-bg);
+    }
+    body { display: flex; flex-direction: column; }
+    .hdr {
+      display: flex; align-items: center; gap: 8px;
+      padding: 10px 12px; border-bottom: 1px solid var(--fl-border);
+      background: rgba(255,255,255,0.02);
+    }
+    .mark {
+      flex: none; width: 18px; height: 18px; border-radius: 6px;
+      background: linear-gradient(135deg, var(--fl-primary), var(--fl-signal));
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.25);
+    }
+    .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--fl-ok); box-shadow: 0 0 6px var(--fl-ok); flex: none; }
+    .dot.run   { background: var(--fl-signal); box-shadow: 0 0 6px var(--fl-signal); animation: slpulse 1s ease-in-out infinite; }
+    .dot.idle  { background: var(--fl-ok); box-shadow: 0 0 6px var(--fl-ok); animation: none; }
+    .dot.stuck { background: var(--fl-stuck); box-shadow: 0 0 6px var(--fl-stuck); animation: slpulse 1.4s ease-in-out infinite; }
+    @keyframes slpulse { 0%,100% { opacity: 1; } 50% { opacity: 0.25; } }
+    .title { font-family: var(--fl-font-display); font-weight: 600; letter-spacing: 0.2px; }
+    .title .lk { color: var(--fl-signal); }
+    .sub { margin-left: auto; font-size: 11px; color: var(--fl-text-faint); }
+
+    .status {
+      margin: 10px 12px 0; padding: 7px 10px; border-radius: var(--fl-r);
+      font-weight: 600; background: rgba(255,255,255,0.05); color: var(--fl-text-dim);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .status.working { color: var(--fl-signal); background: var(--fl-signal-soft); }
+    .status.idle    { color: var(--fl-ok-text); background: var(--fl-ok-bg); }
+    .status.stuck   { color: var(--fl-stuck-text); background: var(--fl-stuck-bg); }
+
+    .tool {
+      margin: 8px 12px 0; font-size: 12px; color: var(--fl-text-dim);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .tool:empty { display: none; }
+
+    .label { font-family: var(--fl-mono); margin: 12px 12px 4px; font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--fl-text-faint); }
+    .msg {
+      flex: 1; margin: 0 12px 12px; padding: 10px 12px;
+      background: rgba(255,255,255,0.04); border: 1px solid var(--fl-border);
+      border-radius: var(--fl-r); overflow-y: auto;
+      white-space: pre-wrap; word-break: break-word; color: var(--fl-text-dim);
+    }
+    .msg.empty { color: var(--fl-text-faint); font-style: italic; }
+  </style>
+</head>
+<body>
+  <div class="hdr">
+    <span class="mark" aria-hidden="true"></span>
+    <span class="dot" id="dot"></span>
+    <span class="title">Fast<span class="lk">Link</span> transcript</span>
+    <span class="sub" id="sub"></span>
+  </div>
+  <div class="status idle" id="status">idle</div>
+  <div class="tool" id="tool"></div>
+  <div class="label">Latest message from Claude</div>
+  <div class="msg empty" id="msg">Waiting for Claude…</div>
+  <script src="sidepanel.js"></script>
+</body>
+</html>

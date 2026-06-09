@@ -320,13 +320,20 @@ async function completeExtPairMagic(env, userId, pollId) {
 
 // Finish the claude.ai authorization grant -> 302 back to claude.ai with the code.
 // props.userId is exactly what FastlinkApiHandler reads from ctx.props.
+//
+// We ALSO stamp `idm` = the identity mode this grant was minted under. The MCP api
+// handler (index.js) re-checks it on every request: if the relay's IDENTITY_MODE
+// later changes, an old token's userId names a DO the (re-paired) extension no
+// longer attaches to — claude.ai would silently talk to an empty DO. Stamping the
+// mode lets the api handler reject such a stale token (401 invalid_token) so
+// claude.ai re-authorizes cleanly under the current mode instead of failing silently.
 async function completeOAuth(env, oauthReqInfo, userId) {
   const { redirectTo } = await env.OAUTH_PROVIDER.completeAuthorization({
     request: oauthReqInfo,
     userId: String(userId),
     scope: OAUTH_SCOPE,
     metadata: { ts: Date.now() },
-    props: { userId: String(userId) },
+    props: { userId: String(userId), idm: identityMode(env) },
   });
   return Response.redirect(redirectTo, 302);
 }

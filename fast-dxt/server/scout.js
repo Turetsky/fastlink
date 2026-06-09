@@ -18,6 +18,18 @@ import { log } from './log.js';
 const pageMapCache = new Map(); // url -> { hash, map }
 const visualMapCache = new Map(); // url -> { hash, map } — VISION pre-warm
 
+// ── Heavy-page guards (GCP and other giant SPAs) ──
+// On a giant SPA a single snapshot can carry thousands of interactive items.
+// Sending them all to Gemini makes the call slow AND degrades the output —
+// gemini-2.5-flash-lite returns empty/garbage JSON on a huge prompt, which is
+// the "empty briefs" symptom. Cap the digest to the items most useful for acting
+// (labeled ones first). Light pages sit far below the cap and are untouched.
+const MAX_SCOUT_ITEMS = 300;
+// Hard ceiling on a single Gemini call. The fetch has no native timeout, so a
+// slow/stuck request would otherwise hang the whole fast_scout tool call until
+// the caller's broker/relay 30s limit fires. Bound it so scout always returns.
+const GEMINI_TIMEOUT_MS = 12_000;
+
 // The tiered toolbox the planner may emit — each maps 1:1 to an existing
 // fast_* tool, so steps are directly runnable via fast_batch. Two tiers for
 // click/type: cheap injected (default) and trusted CDP (for stubborn widgets).
@@ -155,7 +167,30 @@ function slimDigest(d) {
     inOverlay: it.inOverlay || undefined,
   }));
   const content = (d.content || []).map((c) => c.text).filter(Boolean).slice(0, 40);
-  return { url: d.url, title: d.title, items, content };
+  const capped = capItems(items);
+  return {
+    url: d.url, title: d.title, items: capped.items, content,
+    // Tell the planner the digest was trimmed so it can prefer the screenshot
+    // rung over guessing when its target isn't among the kept items.
+    itemsTotal: capped.truncated ? items.length : undefined,
+    itemsTruncated: capped.truncated || undefined,
+  };
+}
+
+// Cap the item list sent to Gemini. Keep items that carry an actionable label
+// (text/label/aria/placeholder/name) FIRST — those are what the planner reasons
+// over — then backfill with the rest up to the cap, preserving DOM order within
+// each group. Returns { items, truncated }. A no-op below the cap (light pages).
+function capItems(items) {
+  if (items.length <= MAX_SCOUT_ITEMS) return { items, truncated: false };
+  const labeled = [];
+  const bare = [];
+  for (const it of items) {
+    (it.text || it.label || it.ariaLabel || it.placeholder || it.name ? labeled : bare).push(it);
+  }
+  const kept = labeled.slice(0, MAX_SCOUT_ITEMS);
+  for (const it of bare) { if (kept.length >= MAX_SCOUT_ITEMS) break; kept.push(it); }
+  return { items: kept, truncated: true };
 }
 
 async function getPageMap(slim) {
@@ -273,11 +308,23 @@ async function callModelParts({ system, parts, maxTokens }) {
     },
   };
   if (system) body.systemInstruction = { parts: [{ text: system }] };
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'x-goog-api-key': GEMINI_API_KEY },
-    body: JSON.stringify(body),
-  });
+  // Bound the fetch — a slow/stuck Gemini call must never hang the tool call.
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), GEMINI_TIMEOUT_MS);
+  let res;
+  try {
+    res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': GEMINI_API_KEY },
+      body: JSON.stringify(body),
+      signal: ctrl.signal,
+    });
+  } catch (e) {
+    if (e && e.name === 'AbortError') throw new Error(`scout gemini timed out (${GEMINI_TIMEOUT_MS}ms)`);
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
   if (!res.ok) {
     const errBody = await res.text().catch(() => '');
     throw new Error(`scout gemini ${res.status}: ${errBody.slice(0, 300)}`);

@@ -35,9 +35,29 @@ const MAX_INDEX = 10000;
 // the page never goes "unresponsive". A node-walk CEILING bails the full walk
 // on giant SPAs (50k+ nodes) so we never even attempt to serialize the world.
 const SLICE_MS = 25;     // max contiguous main-thread time before yielding
+const SNAP_SLICE_MS = 12; // serialize yields MORE eagerly than the index walk:
+                         // each item does 3-5 layout reads (rect + computed-style +
+                         // per-iframe offset), so we keep contiguous work well under
+                         // one frame (16ms) and never drop input on a heavy SPA.
 const MAX_WALK = 25000;  // hard ceiling on DOM nodes VISITED by the index walk
 const HUGE_INDEX = 8000; // above this many entries, snapshots degrade to viewport-only
                          // (kept under MAX_INDEX 10000; normal rich pages sit far below)
+
+// Interactive CONTROL preference (match ranking). A real control (button/input/
+// radio/checkbox/option/menuitem/tab/…) should be preferred over a generic link
+// or text node when text scores are close — e.g. a radio whose accessible name
+// comes from a wrapping <label> vs a plain <a> that merely contains the same word.
+const CONTROL_TAGS = new Set(['button', 'input', 'select', 'textarea']);
+const CONTROL_ROLES = new Set([
+  'button', 'radio', 'checkbox', 'option', 'menuitem', 'menuitemcheckbox',
+  'menuitemradio', 'tab', 'switch', 'link',
+]);
+const CONTROL_BONUS = 1.25; // additive, crosses at most ~one scoring tier — never a hard override
+const isControlItem = (it) => {
+  if (!it) return false;
+  if (CONTROL_TAGS.has(it.tag)) return true;
+  return CONTROL_ROLES.has((it.role || '').toLowerCase());
+};
 
 const visible = (el, rect) => {
   if (rect.width < 2 || rect.height < 2) return false;
@@ -86,19 +106,32 @@ const implicitRoleOf = (tag, type) => {
   return null;
 };
 
+// Collapse internal runs of whitespace (newlines/indentation between a wrapping
+// <label>'s text and its control) to single spaces so the label string is a
+// clean, matchable phrase — e.g. "Delivery instructions:\n  " → "Delivery
+// instructions:". Without this, source-formatted labels carry stray whitespace
+// that breaks exact/substring matching downstream.
+const cleanLabel = (s) => (s || '').replace(/\s+/g, ' ').trim();
 const labelFor = (el) => {
+  // 1) Explicit association: <label for="id">. Works across the element's own
+  //    root (shadow DOM) and the main document.
   if (el.id) {
     const escId = CSS.escape(el.id);
     const root = el.getRootNode && el.getRootNode();
     const lbl = (root && root.querySelector && root.querySelector(`label[for="${escId}"]`))
               || document.querySelector(`label[for="${escId}"]`);
-    if (lbl) return (lbl.textContent || '').trim();
+    if (lbl) return cleanLabel(lbl.textContent);
   }
+  // 2) Implicit association: a wrapping <label> ancestor (the control sits
+  //    INSIDE the label, e.g. httpbin's `<label>Delivery instructions:
+  //    <textarea></textarea></label>`). Strip the control's current value so a
+  //    filled field's text isn't mistaken for its label.
   let p = el.parentElement;
   while (p) {
     if (p.tagName === 'LABEL') {
-      const t = (p.textContent || '').trim();
-      return t.replace((el.value || ''), '').trim();
+      const t = cleanLabel(p.textContent);
+      const v = cleanLabel(el.value || '');
+      return v ? cleanLabel(t.replace(v, '')) : t;
     }
     p = p.parentElement;
   }
@@ -402,9 +435,11 @@ const buildIndexAsync = async (deadlineMs) => {
   let sliceStart = start;
   while (!INDEX.ready) {
     let k = 0;
-    // Bound this slice by SLICE_MS (sampled cheaply every 256 elements). The
-    // huge step budget is just a ceiling; the time check is the real bound.
-    stepInitWalk(5_000_000, () => ((++k & 255) === 0) && (nowMs() - sliceStart) > SLICE_MS);
+    // Bound this slice by SLICE_MS, sampled every 32 nodes. Each node runs
+    // classifyElement→el.matches(SELECTOR) (expensive on deep trees), so a coarse
+    // 256-node cadence let a slow selector run hundreds of times before the first
+    // time-check — long enough to blow past the slice and jank the page.
+    stepInitWalk(5_000_000, () => ((++k & 31) === 0) && (nowMs() - sliceStart) > SLICE_MS);
     if (INDEX.ready) break;
     if ((nowMs() - start) > deadlineMs) break;   // overall deadline → partial index
     await yieldControl();                          // let the page breathe
@@ -677,10 +712,16 @@ const OVERLAY_CONTAINERS =
 // each so it gets a stable id and is clickable/markable even if the
 // MutationObserver hasn't drained the portal's added nodes yet (beats the
 // open-animation race). Returns a Set<Element> for inOverlay tagging.
+const OVERLAY_MAX_ELS = 500;   // never let the portal sweep itself become the freeze
+const OVERLAY_BUDGET_MS = 60;
 const collectOverlayEls = () => {
   const set = new Set();
+  const start = nowMs();
+  // walkDeep can't break early, but the callbacks bail cheaply once we hit the
+  // element cap or wall-clock budget — so a giant open listbox can't hang here.
   walkDeep(document, OVERLAY_CONTAINERS, (container) => {
-    try { walkDeep(container, SELECTOR, (el) => set.add(el)); } catch {}
+    if (set.size >= OVERLAY_MAX_ELS || (nowMs() - start) > OVERLAY_BUDGET_MS) return;
+    try { walkDeep(container, SELECTOR, (el) => { if (set.size < OVERLAY_MAX_ELS) set.add(el); }); } catch {}
   });
   for (const el of set) { try { indexElement(el); } catch {} }
   return set;
@@ -752,16 +793,29 @@ const serializeSnapshot = async (viewportOnly, opts) => {
   const vh = window.innerHeight, vw = window.innerWidth;
   const detached = [];
   let sliceStart = nowMs();
+  // Memoize the per-iframe offset for THIS pass: every element in a given
+  // document shares the same frame-offset chain (shadow roots add none), so we
+  // compute it once per ownerDocument instead of walking + reading a rect per
+  // frame-ancestor on EVERY element — the dominant layout cost on framed pages.
+  const offsetCache = new Map();
+  const offsetForCached = (el) => {
+    const doc = el.ownerDocument || document;
+    let off = offsetCache.get(doc);
+    if (off === undefined) { off = offsetFor(el); offsetCache.set(doc, off); }
+    return off;
+  };
   for (const [el, entry] of INDEX.byEl) {
-    // Every 64 items (cheap), enforce two bounds:
+    // Check the budget OFTEN (every 16 items): each item does 3-5 layout reads,
+    // so a coarse 64-item cadence could run ~300 layouts between checks and blow
+    // a whole frame before yielding. Two bounds:
     //   • overall budget → bail with a partial-but-rich snapshot flagged
     //     snapshotTimedOut, never hang the whole call to the broker timeout.
-    //   • per-slice SLICE_MS → YIELD the main thread so even a 10k-entry
+    //   • per-slice SNAP_SLICE_MS → YIELD the main thread so even a 10k-entry
     //     serialize can't freeze the page into "unresponsive" (issue #7).
-    if ((++seen & 63) === 0) {
+    if ((++seen & 15) === 0) {
       const t = nowMs();
       if (budgetMs && (t - startMs) > budgetMs) { timedOut = true; break; }
-      if ((t - sliceStart) > SLICE_MS) { await yieldControl(); sliceStart = nowMs(); }
+      if ((t - sliceStart) > SNAP_SLICE_MS) { await yieldControl(); sliceStart = nowMs(); }
     }
     if (!el.isConnected) { detached.push(el); continue; }
     let rect;
@@ -769,7 +823,7 @@ const serializeSnapshot = async (viewportOnly, opts) => {
     if (!visible(el, rect)) continue;
     const isOverlayEl = overlayEls && overlayEls.has(el);
     if (viewportOnly && !isOverlayEl && (rect.bottom < 0 || rect.top > vh || rect.right < 0 || rect.left > vw)) continue;
-    const off = offsetFor(el);
+    const off = offsetForCached(el);
     const x = Math.round(rect.x + off.ox);
     const y = Math.round(rect.y + off.oy);
     const w = Math.round(rect.width);
@@ -830,6 +884,11 @@ async function runPageAction(action, args) {
     if (inT(it.ariaLabel))   score = Math.max(score, 1);
     if (inT(it.title))       score = Math.max(score, 0.5);
     if (score === 0 && inT(it.text)) score = 0.25;
+    // Type preference: nudge real interactive CONTROLS above generic links/text
+    // when scores are close. Without this a plain <a>"External" (innerText=4)
+    // outranks the radio whose name "External" comes from a <label> (label=3).
+    // Additive (CONTROL_BONUS crosses ~one tier), never a hard override.
+    if (score > 0 && isControlItem(it)) score += CONTROL_BONUS;
     return score;
   };
   const matchItems = (items, text) => {
@@ -846,18 +905,100 @@ async function runPageAction(action, args) {
   const elAt = (it) => elById(it.i) || document.elementFromPoint(it.x + it.w / 2, it.y + it.h / 2);
   const wait = (ms) => new Promise(r => setTimeout(r, ms));
 
+  // Stable DOM-order comparator on snapshot items. Used wherever an explicit
+  // `index` disambiguates repeated matches — rank order shuffles when sibling
+  // sections re-render, so index:N must address a fixed document-order slot.
+  // Falls back to visual top→bottom / left→right when the elements live in
+  // different trees (iframe/shadow → compareDocumentPosition is DISCONNECTED).
+  const docOrderCmp = (a, b) => {
+    const ea = elById(a.i), eb = elById(b.i);
+    if (ea && eb && ea !== eb) {
+      try {
+        const pos = ea.compareDocumentPosition(eb);
+        if (pos & Node.DOCUMENT_POSITION_FOLLOWING) return -1;
+        if (pos & Node.DOCUMENT_POSITION_PRECEDING) return 1;
+      } catch {}
+    }
+    return (a.y - b.y) || (a.x - b.x);
+  };
+
+  // When a matched element is a descendant link (or a link sharing a <label>)
+  // inside a matched CONTROL with the same text, the inner <a> competes with the
+  // real control and can win — e.g. a checkbox beside "I agree to the
+  // <a>Policy</a>", or a radio named "External" wrapping an <a>External</a>.
+  // Drop the redundant plain link so the control is reachable by its label text.
+  const dropRedundantDescendantLinks = (list) => {
+    if (list.length < 2) return list;
+    const els = new Map();
+    for (const it of list) els.set(it, elById(it.i));
+    return list.filter((it) => {
+      if (it.tag !== 'a' || isControlItem(it)) return true;   // only plain links
+      const el = els.get(it);
+      if (!el) return true;
+      const lbl = (el.closest && el.closest('label')) || null;
+      for (const other of list) {
+        if (other === it || !isControlItem(other)) continue;
+        const oe = els.get(other);
+        if (!oe || oe === el) continue;
+        // control contains the link, OR both sit under the same wrapping <label>.
+        if (oe.contains(el) || (lbl && lbl.contains(oe))) return false;
+      }
+      return true;
+    });
+  };
+
   // Auto-attach a fresh viewport snapshot to action returns so callers don't
   // have to follow every fast_click / fast_fill / etc. with a separate
   // fast_snapshot. Yields one requestAnimationFrame so click handlers, Angular
   // zones, React effects, etc. have a chance to mutate before we serialize.
   // Opt-out per call with args.noSnapshot. Skipped on error returns and when
   // an action already returns its own snapshot.
-  const withSnap = async (result) => {
+  const withSnap = async (result, preSnap) => {
     if (!result || typeof result !== 'object') return result;
     if (result.error || result.snapshot || args.noSnapshot) return result;
-    await new Promise(r => (typeof requestAnimationFrame === 'function')
-      ? requestAnimationFrame(r)
-      : setTimeout(r, 0));
+    // Yield ~one frame so click handlers / framework effects settle before we
+    // serialize — but NEVER hang on it. requestAnimationFrame is FROZEN in a
+    // backgrounded / occluded tab (the relay drives exactly such tabs: the
+    // claude.ai tab is foreground while the target tab is hidden), so the rAF
+    // callback may never fire and the bare `await requestAnimationFrame` would
+    // stall withSnap — and therefore the whole action — until the 30s broker/
+    // relay timeout, even though the action (e.g. a fill) already completed.
+    // Race the frame against a wall-clock cap so a foreground tab still waits a
+    // real frame while a hidden tab falls through promptly. (BUG-4)
+    await Promise.race([
+      new Promise(r => (typeof requestAnimationFrame === 'function')
+        ? requestAnimationFrame(() => r())
+        : setTimeout(r, 0)),
+      // Hard cap. Background tabs clamp setTimeout to ~1s, which is the effective
+      // bound here — still orders of magnitude under the 30s tool timeout — so a
+      // hidden tab whose rAF never fires falls through instead of hanging.
+      new Promise(r => setTimeout(r, 250)),
+    ]);
+    // Avoid the double-walk: most actions already serialized a FULL match
+    // snapshot (serializeSnapshot(false)) to FIND their target. Rather than walk
+    // the entire index a SECOND time here, REUSE that result — viewport-filtered
+    // (cheap array filter, no layout) to keep the payload small. One walk per
+    // action instead of two. The reused view reflects match-time DOM; callers
+    // needing post-action state (a dropdown the click opened) should fast_snapshot
+    // / fast_wait. Actions with no precomputed snapshot (fast_scroll, fast_wait,
+    // fast_select_option) fall through to a single fresh serialize below.
+    if (preSnap && typeof preSnap === 'object' && Array.isArray(preSnap.items)) {
+      try {
+        const vh = window.innerHeight, vw = window.innerWidth;
+        const inView = (it) => !!it.inOverlay || !(it.y + it.h < 0 || it.y > vh || it.x + it.w < 0 || it.x > vw);
+        const items = preSnap.items.filter(inView);
+        const content = Array.isArray(preSnap.content) ? preSnap.content.filter(inView) : [];
+        result.snapshot = { ...preSnap, count: items.length, items, contentCount: content.length, content };
+        if (preSnap.snapshotTimedOut || preSnap.partial || preSnap.capped) {
+          result.snapshotPartial = true;
+          if (preSnap.snapshotTimedOut) result.snapshotTimedOut = true;
+          if (preSnap.capped) result.snapshotNote = 'page too heavy — viewport-only / partial index returned';
+        }
+      } catch {
+        result.snapshot = preSnap;
+      }
+      return result;
+    }
     // The auto-snapshot is a convenience, never the point of the call. Bound it
     // and swallow failures so a slow/huge serialize can NEVER turn a successful
     // action into a broker timeout. On overrun the action result is returned
@@ -921,22 +1062,68 @@ async function runPageAction(action, args) {
     (it.ariaLabel   && it.ariaLabel.toLowerCase().includes(m)) ||
     (it.name        && it.name.toLowerCase().includes(m)) ||
     (it.text        && it.text.toLowerCase().includes(m));
+  // EXACT field match (label / aria / placeholder / name equal, not substring).
+  // Preferred over the loose substring match so "URIs 1" doesn't grab "URIs 10"
+  // or a different section's "URIs" field.
+  const fieldMatchesExact = (it, m) =>
+    (it.label       && it.label.toLowerCase() === m) ||
+    (it.ariaLabel   && it.ariaLabel.toLowerCase() === m) ||
+    (it.placeholder && it.placeholder.toLowerCase() === m) ||
+    (it.name        && it.name.toLowerCase() === m);
+  // Restrict candidate fields to those under a heading/legend whose text matches
+  // `nearLo` — i.e. the nearest preceding section anchor IS the requested one.
+  // Lets callers disambiguate repeated fields by section ("URIs 1" under
+  // "Authorized redirect URIs" vs under "Authorized JavaScript origins") without
+  // guessing an occurrence index. Bounded scans; returns [] when no anchor matches.
+  const scopeItemsToSection = (poolItems, nearLo) => {
+    let headings;
+    try { headings = Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,h6,legend,[role="heading"]')).slice(0, 400); }
+    catch { return []; }
+    if (!headings.length) return [];
+    const matchH = headings.filter(h => ((h.textContent || '').trim().toLowerCase()).includes(nearLo));
+    if (!matchH.length) return [];
+    const precedes = (a, b) => { // a strictly before b in document order
+      try { return !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING); } catch { return false; }
+    };
+    const inSection = (el) => {
+      let nearest = null;   // nearest heading at-or-before el
+      for (const h of headings) {
+        if (h === el) continue;
+        if (h.contains(el) || precedes(h, el)) {
+          if (!nearest || precedes(nearest, h)) nearest = h;
+        }
+      }
+      return !!nearest && matchH.includes(nearest);
+    };
+    const out = [];
+    for (const it of poolItems) {
+      const el = elById(it.i);
+      if (el && inSection(el)) out.push(it);
+    }
+    return out;
+  };
   const fillItem = (found, value, append) => {
     const el = elAt(found);
     if (!el) return { error: 'no element' };
+    // NEVER write the literal "undefined"/"null". A missing value must be caught
+    // before we stringify, or String(undefined) -> "undefined" lands in the field
+    // (confirmed bug: a "Customer name" field read `undefined`). An explicit ""
+    // is a REAL value that CLEARS the field, so only null/undefined is rejected.
+    if (value == null) return { error: "fast_fill: no value provided — pass value (use value:'' to clear the field)" };
+    const v = String(value); // safe now: value is present (may be "")
     flashEl(el, 'fill');
     el.focus();
     if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
       const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
       const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
-      setter.call(el, append ? (el.value + value) : value);
+      setter.call(el, append ? (el.value + v) : v); // v==="" -> empties the field
       el.dispatchEvent(new Event('input', { bubbles: true }));
       el.dispatchEvent(new Event('change', { bubbles: true }));
     } else {
-      el.innerText = append ? (el.innerText + value) : value;
-      el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: value }));
+      el.innerText = append ? (el.innerText + v) : v; // contenteditable: "" clears
+      el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: v }));
     }
-    return { filled: { tag: found.tag, label: found.label, placeholder: found.placeholder, name: found.name }, valueSet: value };
+    return { filled: { tag: found.tag, label: found.label, placeholder: found.placeholder, name: found.name }, valueSet: v };
   };
 
   const pickByText = (items, getText, query) => {
@@ -947,58 +1134,82 @@ async function runPageAction(action, args) {
   };
 
   // Diagnostic for "why didn't this match?" — runs only on a 0-match miss.
+  // This is ONLY a hint; it must NEVER freeze the page. The old version walked
+  // the WHOLE DOM doing getComputedStyle + getBoundingClientRect + closest() per
+  // textual hit (5-10s freeze on GCP's 50k-node tree). Now:
+  //   • hard-cap elements EXAMINED and a wall-clock BUDGET, both checked often;
+  //   • the scan does NO layout — text test uses own text-nodes + a few short
+  //     attributes (cheap, no quadratic textContent), type test is matches();
+  //   • layout reads (style/rect/closest) run on at most a handful of the best
+  //     interactive candidates AFTER the scan;
+  //   • over budget → degrade to a cheap count-only answer.
+  const DIAG_MAX_EXAMINE = 1500;
+  const DIAG_BUDGET_MS = 150;
+  const DIAG_LAYOUT_CAP = 24;
   const diagnoseNoMatch = (queryText) => {
     const q = (queryText || '').toLowerCase();
     if (!q) return ['empty text query'];
     const out = [];
-    const hidden = [], nonInteractive = [], ariaHiddenHits = [], offScreen = [];
-    let interactiveHits = 0;
+    const start = nowMs();
+    let examined = 0, stopped = false;
+    let interactiveHits = 0, nonInteractiveHits = 0;
+    const layoutCandidates = [];
     walkDeep(document, '*', (el) => {
-      const txt = (
-        (el.textContent || '') + ' ' +
-        (el.value || '') + ' ' +
-        (el.getAttribute?.('aria-label') || '') + ' ' +
-        (el.getAttribute?.('placeholder') || '') + ' ' +
-        (el.getAttribute?.('title') || '')
-      ).toLowerCase();
-      if (!txt.includes(q)) return;
-      const cs = el.ownerDocument?.defaultView?.getComputedStyle?.(el);
-      const rect = el.getBoundingClientRect?.();
-      const tag = el.tagName.toLowerCase();
+      if (stopped) return;
+      if (examined >= DIAG_MAX_EXAMINE || ((examined & 15) === 0 && (nowMs() - start) > DIAG_BUDGET_MS)) { stopped = true; return; }
+      examined++;
+      // Cheap, bounded text source: short attributes + this element's OWN text
+      // nodes (not the whole subtree → no quadratic textContent blowup). The
+      // sought text lives on some leaf whose own text contains it, so leaves are
+      // still found.
+      let txt = (el.getAttribute?.('aria-label') || '') + ' ' +
+                (el.getAttribute?.('placeholder') || '') + ' ' +
+                (el.getAttribute?.('title') || '') + ' ' + (el.value || '');
+      if (el.childNodes) {
+        for (const c of el.childNodes) {
+          if (c.nodeType === 3 && c.data) { txt += ' ' + c.data; if (txt.length > 300) break; }
+        }
+      }
+      if (!txt.toLowerCase().includes(q)) return;
+      const isInteractive = el.matches?.(SELECTOR);   // no layout
+      if (isInteractive) { interactiveHits++; if (layoutCandidates.length < DIAG_LAYOUT_CAP) layoutCandidates.push(el); }
+      else nonInteractiveHits++;
+    });
+    // Layout reads ONLY for the capped sample of interactive candidates.
+    let hidden = 0, ariaHidden = 0, offScreen = 0, visibleInteractive = 0;
+    const hiddenTags = [];
+    for (const el of layoutCandidates) {
+      let cs = null, rect = null;
+      try { cs = el.ownerDocument?.defaultView?.getComputedStyle?.(el); } catch {}
+      try { rect = el.getBoundingClientRect?.(); } catch {}
       const isHidden = cs && (cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0');
       const isAriaHidden = el.closest?.('[aria-hidden="true"]') != null;
-      const isInteractive = el.matches?.(SELECTOR);
-      const isOffScreen = rect && (rect.width < 2 || rect.height < 2);
-      if (isHidden) hidden.push(tag);
-      else if (isAriaHidden) ariaHiddenHits.push(tag);
-      else if (isInteractive && isOffScreen) offScreen.push(tag);
-      else if (!isInteractive) nonInteractive.push(tag);
-      else interactiveHits++;
-    });
+      const isOff = rect && (rect.width < 2 || rect.height < 2);
+      if (isHidden) { hidden++; hiddenTags.push(el.tagName.toLowerCase()); }
+      else if (isAriaHidden) ariaHidden++;
+      else if (isOff) offScreen++;
+      else visibleInteractive++;
+    }
     let crossOrigin = 0;
     for (const f of document.querySelectorAll('iframe')) {
       try { if (!f.contentDocument) crossOrigin++; } catch { crossOrigin++; }
     }
-    const totalHits = hidden.length + nonInteractive.length + ariaHiddenHits.length + offScreen.length + interactiveHits;
+    const totalHits = interactiveHits + nonInteractiveHits;
+    const more = (examined >= DIAG_MAX_EXAMINE || layoutCandidates.length >= DIAG_LAYOUT_CAP) ? '+' : '';
     if (totalHits === 0) {
-      out.push(`Text "${queryText}" not found in document, open shadow DOM, or same-origin iframes.`);
+      if (stopped) out.push(`Text "${queryText}" not found in the first ${examined} elements (page too large to scan fully). Try more specific/visible text, fast_scroll, or narrow with role/tag.`);
+      else out.push(`Text "${queryText}" not found in document, open shadow DOM, or same-origin iframes.`);
       if (crossOrigin > 0) out.push(`Page has ${crossOrigin} cross-origin iframe(s) — content there is not inspectable; the element may live inside.`);
     } else {
-      if (interactiveHits > 0) out.push(`${interactiveHits} interactive match(es) exist but were skipped — the snapshot already includes them, so this is unexpected. Try increasing window size or scroll first.`);
-      if (hidden.length) {
-        const tags = [...new Set(hidden)].slice(0, 4).join(', ');
-        out.push(`${hidden.length} match(es) hidden via display:none / visibility:hidden / opacity:0 (${tags}). A parent likely needs to be opened first — dropdown, accordion, or modal.`);
+      if (visibleInteractive > 0) out.push(`${visibleInteractive}${more} interactive match(es) appear visible but were skipped — the snapshot should already include them; try increasing window size or scroll first.`);
+      if (hidden) {
+        const tags = [...new Set(hiddenTags)].slice(0, 4).join(', ');
+        out.push(`${hidden}${more} match(es) hidden via display:none / visibility:hidden / opacity:0 (${tags}). A parent likely needs opening first — dropdown, accordion, or modal.`);
       }
-      if (ariaHiddenHits.length) {
-        out.push(`${ariaHiddenHits.length} match(es) sit under aria-hidden="true" — usually behind an active modal/overlay.`);
-      }
-      if (offScreen.length) {
-        out.push(`${offScreen.length} interactive match(es) have 0×0 / off-screen bounds. Try fast_scroll to bring them into view.`);
-      }
-      if (nonInteractive.length) {
-        const tags = [...new Set(nonInteractive)].slice(0, 4).join(', ');
-        out.push(`${nonInteractive.length} non-interactive match(es) (${tags}) — fast_click only fires on buttons/links/inputs/[role]/[onclick]/etc. Use fast_evaluate to dispatch a click on a plain element if needed.`);
-      }
+      if (ariaHidden) out.push(`${ariaHidden}${more} match(es) sit under aria-hidden="true" — usually behind an active modal/overlay.`);
+      if (offScreen) out.push(`${offScreen}${more} interactive match(es) have 0×0 / off-screen bounds. Try fast_scroll to bring them into view.`);
+      if (nonInteractiveHits) out.push(`${nonInteractiveHits}${more} non-interactive match(es) — fast_click only fires on buttons/links/inputs/[role]/[onclick]/etc. Use fast_evaluate to dispatch a click on a plain element if needed.`);
+      if (stopped) out.push(`(diagnostic stopped early at ${examined} elements / ${DIAG_BUDGET_MS}ms — counts are partial.)`);
     }
     return out;
   };
@@ -1016,7 +1227,14 @@ async function runPageAction(action, args) {
     // coords, so a polling fast_wait doesn't repeatedly force layout
     // on the whole page while it's still rendering.
     const findEntryByText = () => {
+      // Bound the per-poll scan so polling (every 150ms) can never jank: on a
+      // 10k-entry index an unbounded scan + drain every tick adds up. Cap nodes
+      // and wall-clock; a real match is found in the first slice on normal pages.
+      let scanned = 0;
+      const start = nowMs();
       for (const [el, entry] of INDEX.byEl) {
+        if ((++scanned & 511) === 0 && (nowMs() - start) > 20) break;
+        if (scanned > 12000) break;
         if (entry.kind !== 'click') continue;
         if (entry.text && entry.text.toLowerCase().includes(t)) return el;
       }
@@ -1211,7 +1429,7 @@ async function runPageAction(action, args) {
     el.dispatchEvent(new MouseEvent('mouseover', opts));
     el.dispatchEvent(new MouseEvent('mouseenter', opts));
     el.dispatchEvent(new MouseEvent('mousemove', opts));
-    return withSnap({ hovered: { tag: item.tag, text: item.text, x: Math.round(x), y: Math.round(y), scrolledIntoView: offViewport, totalMatches: matches.length, index: idx } });
+    return withSnap({ hovered: { tag: item.tag, text: item.text, x: Math.round(x), y: Math.round(y), scrolledIntoView: offViewport, totalMatches: matches.length, index: idx } }, snap);
   }
 
   if (action === 'fast_drag') {
@@ -1253,16 +1471,20 @@ async function runPageAction(action, args) {
       fire(document.elementFromPoint(x, y) || document.body, 'mousemove', x, y);
     }
     fire(document.elementFromPoint(tx, ty) || document.body, 'mouseup', tx, ty);
-    return withSnap({ dragged: { from: fromItem.text, to: toLabel, fromXY: [Math.round(fx), Math.round(fy)], toXY: [Math.round(tx), Math.round(ty)] } });
+    return withSnap({ dragged: { from: fromItem.text, to: toLabel, fromXY: [Math.round(fx), Math.round(fy)], toXY: [Math.round(tx), Math.round(ty)] } }, snap);
   }
 
   if (action === 'fast_click') {
     const snap = await serializeSnapshot(false);
-    const preFilter = matchItems(snap.items, args.text);
-    let matches = preFilter;
+    // Filter by role/tag BEFORE ranking. Previously the wrong-TYPE top text match
+    // won the slot and the post-rank filter then emptied the list (e.g. a plain
+    // <a> "External" beating the radio, then role="radio" dropping the <a> →
+    // 0 results). When neither is given, matchScore's control-preference biases
+    // toward real controls over generic links/text.
+    let pool = snap.items;
     if (args.role) {
       const wantRole = String(args.role).toLowerCase();
-      matches = matches.filter(m => {
+      pool = pool.filter(m => {
         const explicit = (m.role || '').toLowerCase();
         if (explicit === wantRole) return true;
         return implicitRoleOf(m.tag, m.type) === wantRole;
@@ -1270,10 +1492,16 @@ async function runPageAction(action, args) {
     }
     if (args.tag) {
       const wantTag = String(args.tag).toLowerCase();
-      matches = matches.filter(m => m.tag === wantTag);
+      pool = pool.filter(m => m.tag === wantTag);
     }
+    let matches = matchItems(pool, args.text);
+    // Prefer an ancestor control over a matched descendant / label-wrapped link
+    // competing for the same text (radio named by its <label>; checkbox beside
+    // "I agree to the <a>Policy</a>").
+    matches = dropRedundantDescendantLinks(matches);
     if (matches.length === 0) {
-      if (preFilter.length > 0) {
+      const preFilter = matchItems(snap.items, args.text);
+      if (preFilter.length > 0 && (args.role || args.tag)) {
         const qual = [];
         if (args.role) qual.push(`role="${args.role}"`);
         if (args.tag) qual.push(`tag="${args.tag}"`);
@@ -1284,18 +1512,42 @@ async function runPageAction(action, args) {
       }
       return { error: `No element matching "${args.text}"`, diagnostics: diagnoseNoMatch(args.text) };
     }
-    const idx = typeof args.index === 'number' ? args.index : 0;
-    if (idx >= matches.length) {
-      return { error: `Only ${matches.length} matches for "${args.text}", index ${idx} out of range`, matches: matches.map(m => ({ tag: m.tag, role: m.role, text: m.text, label: m.label })) };
+    // index disambiguation: when an explicit index is given, address matches in
+    // STABLE DOM order (document position), not rank order — rank order reshuffles
+    // when sibling sections re-render, so index:1 would otherwise point at a
+    // different element across calls. Default (no index) still takes the best-
+    // RANKED match. role/tag narrowing already applied to the pool above.
+    const idxGiven = typeof args.index === 'number';
+    const ordered = idxGiven ? matches.slice().sort(docOrderCmp) : matches;
+    const idx = idxGiven ? args.index : 0;
+    if (idx >= ordered.length) {
+      return { error: `Only ${ordered.length} matches for "${args.text}", index ${idx} out of range`, matches: ordered.map(m => ({ tag: m.tag, role: m.role, text: m.text, label: m.label })) };
     }
-    const item = matches[idx];
+    const item = ordered[idx];
     const el = elAt(item);
     if (!el) return { error: 'Element not at expected coords' };
-    const willNavigate = el.tagName === 'A' && el.href && el.target !== '_blank' &&
+    // willNavigate is a best-effort HINT (the batch re-bind keys off ACTUAL
+    // navigation, not this) — but predict the common navigating clicks so callers
+    // get a useful signal: (a) a real same-window link, and (b) a form-submit
+    // control. A <button>/<input> of type submit|image — or a typeless <button>,
+    // which defaults to submit — associated with a <form> submits it, which
+    // navigates unless the page calls preventDefault (which we can't see here).
+    const linkNav = el.tagName === 'A' && el.href && el.target !== '_blank' &&
       !el.href.startsWith('javascript:') && el.href !== location.href + '#';
+    const formSubmitNav = (() => {
+      const tag = el.tagName;
+      if (tag !== 'BUTTON' && tag !== 'INPUT') return false;
+      const type = (el.getAttribute('type') || '').toLowerCase();
+      const isSubmit = type === 'submit' || type === 'image' ||
+        (tag === 'BUTTON' && (type === '' || type === 'submit'));
+      if (!isSubmit) return false;
+      const form = el.form || el.closest('form');
+      return !!form && form.target !== '_blank';
+    })();
+    const willNavigate = linkNav || formSubmitNav;
     flashEl(el, 'click');
     el.click();
-    return withSnap({ clicked: item, willNavigate, totalMatches: matches.length, index: idx });
+    return withSnap({ clicked: item, willNavigate, totalMatches: ordered.length, index: idx }, snap);
   }
 
   if (action === 'fast_scroll') {
@@ -1322,19 +1574,30 @@ async function runPageAction(action, args) {
       // or use fast_wheel for canvas/virtualized cases).
       const deadline = Date.now() + 400;
       try {
+        // 1) Cheapest + most reliable: walk UP from the viewport-center element.
+        // Handles virtualized scrollers and the common "one big scroll pane" case
+        // with a bounded ancestor chain (no full-DOM scan at all).
         let el = document.elementFromPoint(window.innerWidth / 2, window.innerHeight / 2);
         let depth = 0;
         while (el && el !== document.body && el !== document.documentElement && depth++ < 60) {
           if (isScrollableBox(el)) return { el, kind: 'ancestor' };
           el = el.parentElement;
         }
+        // 2) Bounded scan of LIKELY scroller candidates only. The old selector
+        // included `body > * *` (≈every node) and once ran 30s+ on heavy SPAs,
+        // blowing the budget before the first time-check. Restrict to main regions
+        // + elements that ADVERTISE scrolling (class/style hints), hard-cap the
+        // count, and check the clock every 64. Always falls back to window scroll.
         let best = null, bestArea = 0, scanned = 0;
-        for (const e of document.querySelectorAll('main, main *, [role="main"], [role="main"] *, body > *, body > * *')) {
-          // Bail out of the expensive scan if we blow the time budget or scan
-          // an unreasonable number of nodes — fall back to whatever we found
-          // (or the document) rather than walking a massive ad-laden DOM.
-          if ((++scanned & 0x1ff) === 0 && Date.now() > deadline) break;
-          if (scanned > 20000) break;
+        let candidates;
+        try {
+          candidates = document.querySelectorAll(
+            'main, [role="main"], [class*="scroll" i], [class*="overflow" i], [style*="overflow" i]'
+          );
+        } catch { candidates = []; }
+        for (const e of candidates) {
+          if ((++scanned & 63) === 0 && Date.now() > deadline) break;
+          if (scanned > 4000) break;
           if (!isScrollableBox(e)) continue;
           const r = e.getBoundingClientRect();
           if (r.width < 100 || r.height < 100) continue;
@@ -1396,9 +1659,36 @@ async function runPageAction(action, args) {
   if (action === 'fast_fill') {
     const m = (args.match || '').toLowerCase();
     const snap = await serializeSnapshot(false);
-    const found = snap.items.find(it => isFillable(it) && fieldMatchesText(it, m));
-    if (!found) return { error: `No fillable element matching "${args.match}"` };
-    return withSnap(fillItem(found, args.value, args.append));
+    let pool = snap.items.filter(it => isFillable(it));
+    // Optional section scoping: restrict to fields under the nearest heading /
+    // legend matching args.near (alias args.section). Lets callers disambiguate
+    // repeated fields ("URIs 1" in two cards) deterministically by section.
+    const near = String(args.near || args.section || '').toLowerCase();
+    if (near) {
+      const scoped = scopeItemsToSection(pool, near);
+      if (scoped.length) pool = scoped;
+    }
+    // Prefer an EXACT field-label/name match over a loose substring, so "URIs 1"
+    // doesn't grab "URIs 10" / a sibling section's "URIs". Substring is the
+    // fallback when nothing matches exactly.
+    const exact = pool.filter(it => fieldMatchesExact(it, m));
+    const ranked = exact.length ? exact : pool.filter(it => fieldMatchesText(it, m));
+    if (!ranked.length) return { error: `No fillable element matching "${args.match}"` };
+    // Optional occurrence index among the matches in STABLE DOM order.
+    const ordered = ranked.slice().sort(docOrderCmp);
+    const idx = (typeof args.index === 'number' && args.index >= 0) ? args.index : 0;
+    if (idx >= ordered.length) return { error: `Only ${ordered.length} fillable match(es) for "${args.match}", index ${idx} out of range` };
+    const found = ordered[idx];
+    // Lenient key handling: callers/models routinely confuse `text` (fast_type)
+    // with `value` (fast_fill). Accept `text` as an alias. Use `??` (not `||`) so
+    // an explicit empty string value:"" is treated as PRESENT (→ clears) and is
+    // not discarded in favor of `text`.
+    const value = args.value ?? args.text;
+    // Genuinely missing value (undefined/null, not "") → clear error, never write
+    // the literal "undefined".
+    if (value == null) return { error: "fast_fill: no value provided — pass value (use value:'' to clear the field)" };
+    // clear-before-fill is preserved (fillItem replaces unless args.append).
+    return withSnap(fillItem(found, value, args.append), snap);
   }
 
   if (action === 'fast_fill_form') {
@@ -1407,9 +1697,14 @@ async function runPageAction(action, args) {
     const append = !!args.append;
     const stopOnError = !!args.stopOnError;
     const verify = !!args.verify;
-    const items = (await serializeSnapshot(false)).items;
+    const snap = await serializeSnapshot(false);
+    const items = snap.items;
     const usedI = new Set();
     const results = {};
+    // Verify targets are COLLECTED here and re-read in a SEPARATE bounded pass
+    // AFTER all fills — the fill itself is the load-bearing result and must not
+    // wait on (or be hung by) the advisory re-read. (BUG-4)
+    const toVerify = [];
     let filled = 0, missed = 0;
     // Field is filled-but-not-visible if it has no offsetParent (display:none on
     // it or an ancestor, or detached) yet isn't disabled — such fields still
@@ -1424,8 +1719,14 @@ async function runPageAction(action, args) {
       // Each value may be a plain string, or an object form for disambiguation:
       // { value, name, index, exact }. value is required in the object form.
       const spec = (raw && typeof raw === 'object' && !Array.isArray(raw)) ? raw : { value: raw };
-      const value = spec.value;
-      if (value == null) { results[match] = { error: 'value is null' }; missed++; if (stopOnError) break; continue; }
+      // Same lenient key + empty-string-is-real rules as fast_fill: accept `text`
+      // as an alias for `value`, and use `??` so value:"" is kept (→ clears the
+      // field) rather than discarded.
+      const value = spec.value ?? spec.text;
+      // Missing value (undefined/null, not "") → skip this field with a clear
+      // note; NEVER write the literal "undefined". An explicit "" falls through
+      // and clears the field.
+      if (value == null) { results[match] = { error: "no value provided — use '' to clear", skipped: true }; missed++; if (stopOnError) break; continue; }
       // Exact 'name' attribute match (case-insensitive) takes precedence over the
       // label/placeholder/aria/name substring match used for plain string fields.
       const exactName = (spec.name != null) ? String(spec.name).toLowerCase()
@@ -1444,30 +1745,75 @@ async function runPageAction(action, args) {
         missed++; if (stopOnError) break; continue;
       }
       usedI.add(found.i);
-      const r = fillItem(found, String(value), append);
+      const r = fillItem(found, value, append); // fillItem coerces; value is present (may be "")
       results[match] = r;
       const el = elAt(found);
       if (!r.error && isHidden(el)) r.filledButNotVisible = true;
-      if (verify && !r.error) {
-        // Re-read the field's current value after filling. A mismatch means an
-        // async re-render (e.g. a Drupal AJAX widget) wiped what we wrote, which
-        // would otherwise masquerade as a clean fill.
-        const expected = String(value);
-        const current = readValue(el);
-        const stuck = append ? (current != null && current.endsWith(expected))
-                             : (current === expected);
-        if (!stuck) {
-          r.reverted = true;
-          r.currentValue = current;
-        }
-      }
+      // DEFER verification — don't re-read inline. Collect the target; the
+      // re-read runs in a bounded pass below so a slow/stalled read can never
+      // hang the fill loop. (BUG-4)
+      if (verify && !r.error) toVerify.push({ match, el, expected: String(value), append });
       if (r.error) { missed++; if (stopOnError) break; }
       else filled++;
     }
-    const reverted = Object.entries(results).filter(([, r]) => r && r.reverted).map(([k]) => k);
+
     const out = { filled, missed, total: Object.keys(fields).length, results };
-    if (verify) out.reverted = reverted;
-    return withSnap(out);
+
+    // VERIFY: decoupled + time-bounded (BUG-4). The fills above are DONE and are
+    // the load-bearing result. Verification is ADVISORY — it re-reads each filled
+    // field to catch an async re-render (e.g. a Drupal AJAX widget) that wiped
+    // what we wrote, which would otherwise masquerade as a clean fill. It runs as
+    // a SEPARATE pass under its own wall-clock budget and can NEVER hang the call:
+    // on overrun or a throwing read it degrades to "filled, not verified"
+    // (verifyError set) instead of stalling the action to the 30s tool timeout.
+    if (verify) {
+      const VERIFY_BUDGET_MS = 2500;
+      const vStart = nowMs();
+      let verifyTimedOut = false;
+      for (const vf of toVerify) {
+        if (nowMs() - vStart > VERIFY_BUDGET_MS) { verifyTimedOut = true; break; }
+        const r = results[vf.match];
+        if (!r) continue;
+        try {
+          const current = readValue(vf.el);
+          const stuck = vf.append ? (current != null && current.endsWith(vf.expected))
+                                  : (current === vf.expected);
+          if (!stuck) { r.reverted = true; r.currentValue = current; }
+          r.verified = true;
+        } catch (e) {
+          r.verified = false;
+          r.verifyError = (e?.message || String(e)).slice(0, 200);
+        }
+      }
+      if (verifyTimedOut) {
+        out.verifyError = 'verify timed out';
+        // Fields not yet re-read degrade cleanly to "filled, not verified".
+        for (const vf of toVerify) {
+          const r = results[vf.match];
+          if (r && r.verified === undefined && !('verifyError' in r)) {
+            r.verified = false;
+            r.verifyError = 'verify timed out';
+          }
+        }
+      }
+      out.reverted = Object.entries(results).filter(([, r]) => r && r.reverted).map(([k]) => k);
+    }
+
+    // Defensive overall bound (BUG-4): the fill result MUST return well under the
+    // 30s tool timeout regardless of how the snapshot tail behaves. withSnap is
+    // already self-bounded, but race it against a hard cap so any future stall in
+    // the snapshot path degrades to "filled, snapshot skipped" rather than a
+    // blind 30s timeout. The fill is non-idempotent — a lost ack must never look
+    // like "nothing happened" and provoke a retry.
+    const HANDLER_CAP_MS = 8000;
+    return await Promise.race([
+      withSnap(out, snap),
+      new Promise((resolve) => setTimeout(() => resolve({
+        ...out,
+        snapshotPartial: true,
+        snapshotNote: 'snapshot skipped — bounded to keep fast_fill_form responsive',
+      }), HANDLER_CAP_MS)),
+    ]);
   }
 
   return { error: `Unknown action: ${action}` };

@@ -37,14 +37,37 @@ export async function handleTabAction(action, args = {}) {
   return { error: `Unknown tab action: ${action}` };
 }
 
+// Bring a tab's OWNING WINDOW to the foreground. `active:true` on tabs.create
+// only makes the tab active WITHIN its window — it does NOT focus the window.
+// So a default (foreground) fast_tab whose tab lands in a non-focused window is
+// still backgrounded as far as captureVisibleTab is concerned (it only grabs the
+// active tab of the focused window), which is exactly the reported screenshot
+// failure. Focusing the window is what makes the new tab truly foreground &
+// screenshottable. Window-focus is INDEPENDENT of the targetTab pin: pinning
+// routes actions, focusing decides what's on-screen — we do both, separately.
+async function focusTabWindow(tab) {
+  try {
+    if (tab?.windowId !== undefined) {
+      await chrome.windows.update(tab.windowId, { focused: true });
+    }
+  } catch {}
+}
+
 async function openTab({ url, background }) {
+  // active:true → foreground-within-window (the parameter default); we ALSO
+  // focus the owning window below so "foreground" actually holds on-screen.
   const opts = { url, active: !background };
   try {
     const tab = await chrome.tabs.create(opts);
     // A tab Claude opens is a tab Claude means to drive — pin it so subsequent
-    // actions target it even though the user's focus may be elsewhere.
+    // actions target it even though the user's focus may be elsewhere. Pinning
+    // and focusing are independent: the pin is set regardless of background.
     await setTargetTab(tab.id);
-    return { id: tab.id, url: tab.pendingUrl || tab.url, pinned: tab.id };
+    // Default (foreground): focus the owning window so the tab is truly on-screen
+    // and captureVisibleTab/screenshot work without a fast_switch first. When
+    // background:true we deliberately leave focus alone (active:false above).
+    if (!background) await focusTabWindow(tab);
+    return { id: tab.id, url: tab.pendingUrl || tab.url, targetTab: tab.id };
   } catch (e) {
     if (!/no current window/i.test(e?.message || '')) throw e;
     // Cold-started SW with no current window: pick any normal window, else
@@ -53,12 +76,13 @@ async function openTab({ url, background }) {
     if (win) {
       const tab = await chrome.tabs.create({ ...opts, windowId: win.id });
       await setTargetTab(tab.id);
-      return { id: tab.id, url: tab.pendingUrl || tab.url, pinned: tab.id };
+      if (!background) await focusTabWindow(tab);
+      return { id: tab.id, url: tab.pendingUrl || tab.url, targetTab: tab.id };
     }
     const created = await chrome.windows.create({ url, focused: !background });
     const tab = created.tabs?.[0];
     if (tab?.id !== undefined) await setTargetTab(tab.id);
-    return { id: tab?.id, url, pinned: tab?.id };
+    return { id: tab?.id, url, targetTab: tab?.id };
   }
 }
 
@@ -78,6 +102,10 @@ function waitForComplete(tabId, waitMs) {
 }
 
 // True if the MAIN-world page.js self-attached window.__fastlink.run in the tab.
+// This is the SAME liveness check the per-action bridge uses (its
+// {__fastlinkMissing} sentinel fires when window.__fastlink.run is absent) — so
+// the post-nav health-check and the per-action self-heal agree on "is the page
+// channel live?".
 async function probeContentScript(tabId) {
   try {
     const [{ result }] = await chrome.scripting.executeScript({
@@ -90,6 +118,21 @@ async function probeContentScript(tabId) {
   }
 }
 
+// Probe the MAIN-world page.js a few times with a short settle between tries.
+// The declarative content-script injection re-attaches window.__fastlink on the
+// new document, but it RACES fast_nav's return: right after load 'complete' the
+// script may not have executed yet, so the first probe misses a script that's
+// about to attach (and a snapshot taken then comes back empty / networkIdle
+// falsely reports idle against the not-yet-live script). Returns true as soon as
+// the channel responds.
+async function probeUntilLive(tabId, tries = 3, gapMs = 150) {
+  for (let i = 0; i < tries; i++) {
+    if (await probeContentScript(tabId)) return true;
+    if (i < tries - 1) await new Promise((r) => setTimeout(r, gapMs));
+  }
+  return false;
+}
+
 async function navigateTab({ url, waitMs }) {
   const tab = await getTargetTab();
   if (!tab) return { error: 'No active tab' };
@@ -99,13 +142,13 @@ async function navigateTab({ url, waitMs }) {
   // and our content script's window.__fastlink may be missing or destroyed.
   // Cap at 10s by default to avoid hanging on slow/never-loading pages.
   await waitForComplete(tab.id, waitMs);
-  // The pre-injected page.js can be stale/missing when the extension was
-  // reloaded after the tab opened (snapshot empty, networkIdle falsely idle,
-  // screenshot readback fails). Probe MAIN-world for window.__fastlink and, if
-  // absent, re-inject the same content scripts in the same order as the
-  // manifest as a fallback — the declarative injection still handles the
-  // common case. inFrame restricted URLs (chrome://) just stay 'stale'.
-  let contentScript = (await probeContentScript(tab.id)) ? 'fresh' : 'stale';
+  // HEALTH-CHECK the page channel before returning. The pre-injected page.js can
+  // be (a) not-yet-attached because the declarative injection races our return,
+  // or (b) stale/missing because the extension was reloaded after the tab opened
+  // (snapshot empty, networkIdle falsely idle, screenshot readback fails). Probe
+  // with a short settle to absorb (a); if it's still not live, re-inject page.js
+  // in the same MAIN world as the manifest and re-probe ONCE to fix (b).
+  let contentScript = (await probeUntilLive(tab.id)) ? 'fresh' : 'stale';
   if (contentScript === 'stale') {
     try {
       await chrome.scripting.executeScript({
@@ -113,6 +156,15 @@ async function navigateTab({ url, waitMs }) {
       });
       if (await probeContentScript(tab.id)) contentScript = 'reinjected';
     } catch {}
+  }
+  // Still not live (restricted chrome:// URL, crashed renderer, or inject
+  // blocked) → surface 'stale' WITH a clear, machine-readable hint so the caller
+  // doesn't silently chase empty snapshots; fast_reload is the recovery path.
+  if (contentScript === 'stale') {
+    return {
+      id: tab.id, url, contentScript,
+      hint: 'FastLink\'s content script is not live in the navigated tab — snapshot/click/wait may return empty or falsely idle. Call fast_reload to recover. (Restricted chrome:// / extension-gallery URLs cannot be driven.)',
+    };
   }
   return { id: tab.id, url, contentScript };
 }
@@ -128,10 +180,10 @@ async function reloadTab({ waitMs }) {
 async function listTabs() {
   let tabs = await chrome.tabs.query({ currentWindow: true });
   if (tabs.length === 0) tabs = await chrome.tabs.query({ windowType: 'normal' });
-  const pinned = (await resolveTargetTab())?.id;
+  const pinnedId = (await resolveTargetTab())?.id;
   return tabs.map(t => ({
     id: t.id, url: t.url, title: t.title, active: t.active,
-    ...(t.id === pinned ? { pinned: true } : {}),
+    ...(t.id === pinnedId ? { targetTab: true } : {}),
   }));
 }
 
@@ -173,5 +225,5 @@ async function switchTab(args = {}) {
     await chrome.tabs.update(target.id, { active: true });
     if (target.windowId !== undefined) await chrome.windows.update(target.windowId, { focused: true });
   } catch {}
-  return { id: target.id, url: target.url, title: target.title, pinned: target.id };
+  return { id: target.id, url: target.url, title: target.title, targetTab: target.id };
 }

@@ -1,4 +1,11 @@
 import { resolveTargetTab } from './actions/targetTab.js';
+// Static import of cdp (was `await import('./actions/input.js')` at call time):
+// dynamic import() is disallowed in the MV3 service-worker global scope and threw
+// "import() is disallowed on ServiceWorkerGlobalScope", which broke the CDP
+// screenshot fallback (e.g. capturing a backgrounded pinned tab). The
+// input.js ↔ util.js cycle is safe: cdp is only referenced inside
+// captureViaDebugger (call time), after both modules finish initializing.
+import { cdp } from './actions/input.js';
 
 export const getActiveTab = async () => {
   // Honor the designated target pin first, so every chokepoint that resolves a
@@ -77,7 +84,6 @@ export async function captureVisibleRetry(capOpts = { format: 'png' }, attempts 
 export async function captureViaDebugger(capOpts = { format: 'png' }) {
   const tab = await getActiveTab();
   if (!tab?.id) throw new Error('no active tab for debugger capture');
-  const { cdp } = await import('./actions/input.js'); // dynamic: avoid a static import cycle
   const format = capOpts.format === 'jpeg' ? 'jpeg' : 'png';
   const base = { format, captureBeyondViewport: false };
   if (format === 'jpeg' && typeof capOpts.quality === 'number') base.quality = capOpts.quality;

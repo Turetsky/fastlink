@@ -10,7 +10,34 @@
 //   • Gemini points come back    = normalized 0-1000 of the IMAGE we send
 // So the server divides by dpr at the end; this file just reports dpr + the
 // exact image dims (and, for a crop, where the crop sits in CSS space).
-import { injectInTab, captureVisiblePinAware } from '../util.js';
+import { injectInTab, captureVisiblePinAware, captureViaDebugger } from '../util.js';
+
+// Robust viewport grab for the vision tiers (fast_vision_capture / the warm
+// capture fast_point relies on, and fast_annotate_boxes). The GPU compositor
+// intermittently wedges ("image readback failed" / "Failed to capture tab") —
+// captureVisibleTab depends on that GPU readback path, while CDP
+// Page.captureScreenshot reads the window surface and can succeed when it's
+// wedged. captureVisiblePinAware already retries captureVisibleTab (quota-spaced)
+// on the foreground path and routes a backgrounded pinned tab through CDP, but
+// its foreground path has no CDP fallback — so add one here before surfacing an
+// error. Returns a device-px dataUrl, or null only after every path is exhausted.
+async function captureForVision(capOpts = { format: 'png' }) {
+  let lastErr;
+  for (let i = 0; i < 2; i++) {
+    if (i > 0) await new Promise((r) => setTimeout(r, 200));
+    try {
+      const d = await captureVisiblePinAware(capOpts);
+      if (d) return d;
+    } catch (e) { lastErr = e; }
+  }
+  // captureVisibleTab kept failing the GPU readback — fall back to CDP.
+  try {
+    const d = await captureViaDebugger(capOpts);
+    if (d) return d;
+  } catch (e) { lastErr = e; }
+  if (lastErr) console.warn('[fastlink] vision capture exhausted retries:', lastErr?.message || lastErr);
+  return null;
+}
 
 function readDpr() {
   return window.devicePixelRatio || 1;
@@ -63,8 +90,8 @@ export async function visionCapture(args = {}) {
     if (r.error) return r;
     const dpr = r.result || 1;
 
-    const dataUrl = await captureVisiblePinAware({ format: 'png' });
-    if (!dataUrl) return { error: 'vision capture: no image' };
+    const dataUrl = await captureForVision({ format: 'png' });
+    if (!dataUrl) return { error: 'vision capture failed: GPU image readback wedged and the CDP fallback also failed — retry in a moment' };
 
     const cropCss = args.crop && typeof args.crop === 'object' ? args.crop : null;
     const cropDev = cropCss
@@ -96,8 +123,8 @@ export async function annotateBoxes(args = {}) {
     if (r.error) return r;
     const dpr = r.result || 1;
 
-    const dataUrl = await captureVisiblePinAware({ format: 'png' });
-    if (!dataUrl) return { error: 'annotateBoxes: no image' };
+    const dataUrl = await captureForVision({ format: 'png' });
+    if (!dataUrl) return { error: 'annotateBoxes failed: GPU image readback wedged and the CDP fallback also failed — retry in a moment' };
 
     const blob = await (await fetch(dataUrl)).blob();
     const bmp = await createImageBitmap(blob);

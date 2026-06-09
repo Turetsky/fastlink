@@ -22,7 +22,7 @@ in the auto-pair flow depends on this ID being stable.
   matches.
 
 ## Where the private key lives
-- Private key (PEM): `/home/yaakov/code/Fastlink/fastlink-extension-signing-key.pem`
+- Private key (PEM): `<repo>/fastlink-extension-signing-key.pem`
   — **outside** `fast-ext/`, gitignored, never packaged. KEEP SECRET. Whoever
   uploads to the Chrome Web Store needs this so the published ID matches.
 - The `key` field in `manifest.json` is only the **public** half — safe to commit.

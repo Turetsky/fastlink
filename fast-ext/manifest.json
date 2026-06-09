@@ -4,10 +4,10 @@
   "name": "FastLink",
   "version": "0.4.0",
   "description": "Let Claude read and control your active Chrome tab — snapshot the DOM, click, fill forms, capture console and network logs.",
-  "permissions": ["tabs", "scripting", "activeTab", "alarms", "webRequest", "storage", "identity"],
-  "optional_permissions": ["debugger"],
+  "permissions": ["tabs", "scripting", "activeTab", "alarms", "webRequest", "storage", "identity", "debugger", "notifications", "sidePanel"],
   "host_permissions": ["<all_urls>"],
   "background": { "service_worker": "background.js", "type": "module" },
+  "side_panel": { "default_path": "sidepanel.html" },
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
@@ -20,6 +20,13 @@
       "matches": ["<all_urls>"],
       "js": ["src/consoleListener.js", "src/networkListener.js", "src/overlay.js"],
       "run_at": "document_start",
+      "world": "ISOLATED",
+      "all_frames": false
+    },
+    {
+      "matches": ["https://claude.ai/*"],
+      "js": ["src/claudeScrape.js"],
+      "run_at": "document_idle",
       "world": "ISOLATED",
       "all_frames": false
     }

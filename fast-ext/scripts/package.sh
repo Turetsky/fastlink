@@ -48,6 +48,8 @@ INCLUDE=(
   options.js
   onboarding.html
   onboarding.js
+  sidepanel.html
+  sidepanel.js
   src
   icons/icon-16.png
   icons/icon-32.png

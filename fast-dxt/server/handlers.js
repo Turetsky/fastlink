@@ -8,6 +8,45 @@ import { scout, warm as warmScout, locateByImage, pointByImage, boxByImage, pick
 
 const text = (obj) => ({ content: [{ type: 'text', text: JSON.stringify(obj) }] });
 
+// --- Server-side capture-retry guard --------------------------------------
+// captureVisibleTab copies the rendered surface out of the GPU compositor and
+// INTERMITTENTLY throws "image readback failed" when that process wedges (page
+// renders fine, only the bitmap copy fails). The extension already retries at the
+// capture level (captureVisibleRetry), but the wedge can outlast those attempts,
+// so a thin SERVER-side guard retries the whole callExtension a couple more times
+// (spaced, since the failure is transient and a later frame often succeeds)
+// before surfacing the error to the model. Only the screenshot/vision capture
+// tools are guarded; everything else passes straight through. This does NOT touch
+// handleScout's own vision fallback (that path calls callExtension directly).
+const CAPTURE_TOOLS = new Set([
+  'fast_screenshot', 'fast_vision_capture', 'fast_marks', 'fast_annotate_boxes',
+]);
+// NON-IDEMPOTENT actions must NEVER be auto-retried — a re-fire double-writes
+// (double-typed values, double clicks/submits). This matters specifically after
+// BUG-4: a fill can succeed in the page while its ack is lost/slow and the call
+// surfaces as a timeout — retrying that would silently write the value twice.
+// callCapture today only runs for CAPTURE_TOOLS (read-only screenshot/vision, so
+// safe to repeat), but guard explicitly so a future edit that adds a write tool
+// to CAPTURE_TOOLS can't silently start double-writing. (BUG-4)
+const NON_IDEMPOTENT = new Set([
+  'fast_fill_form', 'fast_fill', 'fast_fill_vision', 'fast_type', 'fast_do',
+  'fast_click', 'fast_click_xy', 'fast_select_option', 'fast_drag', 'fast_drag_xy',
+  'fast_key', 'fast_key_press', 'fast_nav', 'fast_reload',
+]);
+const READBACK_ERR_RE = /readback|compositor|captureVisibleTab/i;
+async function callCapture(name, args, retries = 2) {
+  let payload = await callExtension(name, args);
+  // Never auto-retry a non-idempotent action, whatever the error.
+  if (NON_IDEMPOTENT.has(name)) return payload;
+  for (let i = 0; i < retries; i++) {
+    const err = payload && typeof payload === 'object' ? payload.error : null;
+    if (typeof err !== 'string' || !READBACK_ERR_RE.test(err)) break;
+    await new Promise((r) => setTimeout(r, 800)); // let the wedged compositor recover
+    payload = await callExtension(name, args);
+  }
+  return payload;
+}
+
 // --- Lightweight timing instrumentation (perf diagnosis) -------------------
 // Append one JSONL row per tool call to /tmp/fastlink-timing.jsonl:
 //   gapMs = time since the PREVIOUS call returned = Opus round-trip/think time
@@ -68,7 +107,9 @@ async function dispatchCall(name, args) {
     if (name === 'fast_fill_vision') return text(await handleFillVision(args));
     if (name === 'fast_do') return text(await handleDo(args));
     if (name === 'fast_locate') return text(await handleLocate(args));
-    const payload = await callExtension(name, args || {});
+    const payload = CAPTURE_TOOLS.has(name)
+      ? await callCapture(name, args || {})
+      : await callExtension(name, args || {});
     // Tool-level errors come back as resolved payloads with `error` set, plus
     // any extras (diagnostics, available, etc.). Surface them as text so the
     // LLM sees everything, not just the message.
@@ -132,32 +173,90 @@ async function handleScout(args) {
   const macros = Array.isArray(raw?.macros) ? raw.macros : (Array.isArray(raw) ? raw : []);
 
   let result;
+  let degraded = false; // a DOM tier timed out / came back capped|partial → go vision
   for (let t = 0; t < SNAPSHOT_TIERS.length; t++) {
     const tier = SNAPSHOT_TIERS[t];
     const last = t === SNAPSHOT_TIERS.length - 1;
-    const snap = await callExtension('fast_snapshot', tier.snap);
-    if (snap?.error) { if (last) return { error: snap.error }; continue; }
-    const digest = snap?.result;
-    if (!digest || !Array.isArray(digest.items)) {
-      if (last) return { error: 'scout: snapshot returned no items (content script may be stale — reload the tab)' };
+    const snap = await scoutSnapshot(tier.snap);
+    if (snap?.error) {
+      // A snapshot timeout/error on a heavy page IS the signal to go vision.
+      degraded = true;
+      if (last) break;
       continue;
     }
+    const digest = snap?.result;
+    if (!digest || !Array.isArray(digest.items)) {
+      if (last) { degraded = true; break; }
+      continue;
+    }
+    const heavy = !!(digest.capped || digest.partial || digest.snapshotTimedOut);
     result = await scout({ intent, digest, macros });
     result.tier = tier.label;
+    // READ MODE on a HEAVY page: the DOM index is too sparse/degraded to
+    // summarize well, so prefer a screenshot→Gemini vision read (DOM-independent,
+    // the same path fast_point uses — it doesn't care how big the DOM is).
+    if (!intent && !result.disabled && heavy) {
+      const vis = await visionScoutRead(null);
+      if (vis) return vis;
+    }
     // Read mode, disabled, or Gemini satisfied → done. Otherwise escalate to a
     // bigger snapshot and let Gemini look again (the "double run").
     if (!intent || result.disabled || !result.needMore) return result;
+    // HEAVY-PAGE SHORT-CIRCUIT: this snapshot came back degraded (issue #7's
+    // capped/partial/snapshotTimedOut flags), so the page is too heavy to keep
+    // re-reading — escalating to the bigger `full`/`overlay` DOM tiers would just
+    // hang on the same giant DOM. Stop the DOM escalation and go to vision below.
+    if (heavy) { degraded = true; break; }
   }
-  // DOM tiers (viewport → full) exhausted but Gemini still says needMore.
-  // Final rung: SCREENSHOT. fast_marks returns an annotated PNG (numbered red
-  // boxes whose labels ARE element ids) + a marks index; multimodal Gemini
-  // picks the box, we map it to cx,cy and emit a trusted click. Bounded and
-  // non-fatal: any failure falls back to the prior DOM result.
-  if (intent && result && result.needMore) {
+  // INTENT MODE, DOM tiers exhausted/degraded → SCREENSHOT rung. fast_marks
+  // returns an annotated PNG (numbered red boxes whose labels ARE element ids) +
+  // a marks index; multimodal Gemini picks the box, we map it to cx,cy and emit a
+  // trusted click. Bounded and non-fatal: any failure falls back below.
+  if (intent && ((result && result.needMore) || degraded)) {
     const located = await screenshotRung(intent);
     if (located) return located;
+    // Screenshot rung couldn't act → at least hand back a vision-based read so the
+    // caller has page comprehension instead of an empty/timed-out result.
+    const vis = await visionScoutRead(intent);
+    if (vis) return { ...(result || {}), ...vis };
   }
-  return result; // tiers exhausted — result still carries needMore + needsMoreInfo
+  // READ MODE where every DOM tier errored/timed out → screenshot→Gemini read.
+  if (!intent && (degraded || !result)) {
+    const vis = await visionScoutRead(null);
+    if (vis) return vis;
+  }
+  return result || {
+    error: 'scout: no usable snapshot (page heavy/unresponsive). Try fast_screenshot, fast_point, or reload the tab.',
+  };
+}
+
+// Screenshot→Gemini page comprehension — the DOM-INDEPENDENT scout read. Used
+// when the DOM index is too heavy/degraded to summarize (GCP and other giant
+// SPAs): capture one screenshot and ask Gemini for a terse page understanding
+// (summary + main interactive regions), exactly like the vision pre-warm. Reuses
+// a warm visual map when prewarm already built one. Best-effort: returns null on
+// any failure so the caller can fall back. `intent` is informational only (the
+// runnable target for an intent comes from the screenshot rung).
+async function visionScoutRead(intent) {
+  try {
+    const url = await currentUrl();
+    // Reuse a warm visual map if prewarm already paid for one on this page.
+    const warm = getWarmVisualMap(url);
+    if (warm) {
+      return { tier: 'vision', via: 'screenshot', warmed: true, url,
+               summary: warm.summary, regions: warm.regions,
+               intent: intent || undefined, note: 'heavy DOM — vision (screenshot) read' };
+    }
+    const cap = await captureForVision({});
+    if (cap.error || !cap.dataUrl) return null;
+    const vm = await visualMap(url, cap.dataUrl);
+    if (!vm || vm.disabled) return null;
+    return { tier: 'vision', via: 'screenshot', warmed: !!vm.warmed, url,
+             summary: vm.summary, regions: vm.regions,
+             intent: intent || undefined, note: 'heavy DOM — vision (screenshot) read' };
+  } catch {
+    return null;
+  }
 }
 
 // Tier 3 screenshot escalation. Returns a runnable plan on success, or null to
@@ -299,6 +398,20 @@ export function getWarmVisualMap(url) { return getVisualMap(url || ''); }
 // reports the current data is insufficient (needMore). Solves the "snapshot too
 // long vs too short" problem: the big snapshot stays server-side; Claude only
 // ever gets the distilled plan. Easy to extend with overlay/screenshot tiers.
+// Per-tier snapshot deadline for the scout. The extension's serialize is already
+// self-bounded (issue #7), but on a WEDGED renderer the content script can stop
+// responding entirely and burn the full 30s broker timeout per tier. Race each
+// snapshot against a tighter deadline so fast_scout stays responsive (~5-8s on a
+// heavy page) instead of stacking 30s timeouts across three tiers. On overrun we
+// return an error sentinel so the tier loop treats it as "no data" and moves on.
+const SCOUT_SNAPSHOT_TIMEOUT_MS = 8000;
+async function scoutSnapshot(snapArgs) {
+  const snapP = callExtension('fast_snapshot', snapArgs);
+  const timeoutP = new Promise((resolve) =>
+    setTimeout(() => resolve({ error: 'scout: snapshot timed out (page too heavy/unresponsive)' }), SCOUT_SNAPSHOT_TIMEOUT_MS));
+  return Promise.race([snapP, timeoutP]);
+}
+
 const SNAPSHOT_TIERS = [
   { label: 'viewport', snap: { viewport: true } },
   { label: 'full', snap: { viewport: false } },
@@ -825,20 +938,57 @@ async function handleLocate(args) {
     return { via: 'vision', xCss: p.xCss, yCss: p.yCss, found: true, target };
   })().catch(() => null);
 
-  const winner = await raceUsable([domTier, visionTier]);
+  const winner = await pickLocateWinner(domTier, visionTier);
   if (winner) return winner;
   return { via: null, found: false, target };
 }
 
-// Resolve with the FIRST promise that yields a truthy value; if all yield
-// null/throw, resolve null. (Promise.race is wrong here — it would resolve with
-// the fastest LOSER's null. This waits past nulls for a real hit.)
-function raceUsable(promises) {
+// DOM-PREFERRING race. The DOM tier is more precise (real element box, no model
+// jitter) and on a simple page should trivially win — but it pays a full
+// snapshot round-trip while vision returns a warm Gemini point in ~700ms, so a
+// naive "first truthy wins" lets vision steal pages DOM would have nailed
+// (httpbin's labeled <textarea> — the reported bug). Rules:
+//   • DOM hit  → DOM wins immediately (most precise, no reason to wait).
+//   • DOM miss (resolved null, not hung) → take vision as soon as DOM confirms
+//     the miss; no need to burn the grace window.
+//   • DOM still pending when vision returns a hit → hold the vision hit for a
+//     short GRACE window so a slightly-slower DOM snapshot can still win; if
+//     grace elapses with no DOM hit, accept vision.
+//   • Both miss → null.
+// Bounded throughout: domTier self-caps at LOCATE_DOM_TIMEOUT_MS (resolving
+// null), and a hard LOCATE_MAX_MS ceiling resolves with the best hit so far so a
+// wedged vision call can never hang the tool.
+const LOCATE_DOM_GRACE_MS = 1200;
+const LOCATE_MAX_MS = 8000;
+function pickLocateWinner(domP, visionP) {
   return new Promise((resolve) => {
-    let remaining = promises.length;
-    if (!remaining) return resolve(null);
-    const settle = (v) => { if (v) resolve(v); else if (--remaining === 0) resolve(null); };
-    for (const p of promises) Promise.resolve(p).then(settle, () => settle(null));
+    let settled = false;
+    let domDone = false, visionDone = false;
+    let domHit = null, visionHit = null;
+    let graceTimer = null, hardTimer = null;
+    const finish = (v) => {
+      if (settled) return;
+      settled = true;
+      if (graceTimer) clearTimeout(graceTimer);
+      if (hardTimer) clearTimeout(hardTimer);
+      resolve(v || null);
+    };
+    hardTimer = setTimeout(() => finish(domHit || visionHit), LOCATE_MAX_MS);
+
+    Promise.resolve(domP).then((v) => {
+      domDone = true; domHit = v || null;
+      if (domHit) return finish(domHit);          // DOM wins outright
+      if (visionDone) return finish(visionHit);   // DOM confirmed a miss → vision
+      // else: DOM missed but vision not back yet → wait for vision branch.
+    }, () => { domDone = true; if (visionDone) finish(visionHit); });
+
+    Promise.resolve(visionP).then((v) => {
+      visionDone = true; visionHit = v || null;
+      if (domDone) return finish(visionHit);       // DOM already settled (a miss)
+      // DOM still pending — prefer it: hold a vision hit through the grace window.
+      if (visionHit) graceTimer = setTimeout(() => finish(visionHit), LOCATE_DOM_GRACE_MS);
+      // vision missed too → let the DOM branch decide when it settles.
+    }, () => { visionDone = true; if (domDone) finish(domHit); });
   });
 }
 
@@ -846,15 +996,28 @@ function raceUsable(promises) {
 // element's CENTER in CSS px ({xCss,yCss}) or null. Tries exact label match,
 // then substring, then all-words-present. Only considers items with full coords.
 function matchItem(items, target) {
-  const q = target.toLowerCase().trim();
+  // Normalize for matching: lowercase, collapse whitespace, and strip a trailing
+  // ":" / "：" (+ whitespace). A <label> is commonly rendered "Delivery
+  // instructions:" while the caller's target is "Delivery instructions" (or vice
+  // versa) — without trimming the trailing colon those never match exactly, and
+  // a colon-terminated query fails the substring test against a colon-less field.
+  const norm = (s) => (s || '').toLowerCase().replace(/\s+/g, ' ').replace(/[:：\s]+$/, '').trim();
+  const q = norm(target);
+  if (!q) return null;
   const hasCoords = (it) => ['x', 'y', 'w', 'h'].every((k) => typeof it[k] === 'number');
-  const fields = (it) => [it.text, it.label, it.ariaLabel, it.placeholder, it.name, it.role, it.href]
-    .filter(Boolean).join(' ').toLowerCase();
+  const fields = (it) => norm([it.text, it.label, it.ariaLabel, it.placeholder, it.name, it.role, it.href]
+    .filter(Boolean).join(' '));
   let best = items.find((it) => hasCoords(it) && fields(it) === q);
   if (!best) best = items.find((it) => hasCoords(it) && fields(it).includes(q));
   if (!best) {
     const words = q.split(/\s+/).filter(Boolean);
-    if (words.length) best = items.find((it) => { const f = fields(it); return hasCoords(it) && words.every((w) => f.includes(w)); });
+    // Include the tag in the per-word search so a control phrased with its type
+    // ("delivery instructions textarea", "submit button") still resolves — every
+    // word must be present, so the tag only confirms an already-strong match.
+    if (words.length) best = items.find((it) => {
+      const f = (fields(it) + ' ' + norm(it.tag));
+      return hasCoords(it) && words.every((w) => f.includes(w));
+    });
   }
   if (!best) return null;
   return { xCss: Math.round(best.x + best.w / 2), yCss: Math.round(best.y + best.h / 2) };
@@ -917,6 +1080,108 @@ async function refinePoint(target, xCss, yCss, full) {
 // Same diagnostic-only set the extension enforces for macros — keep in sync.
 const DIAGNOSTIC_ONLY_STEPS = new Set(['fast_status', 'fast_batch', 'fast_scout', 'fast_point', 'fast_point_som', 'fast_fill_vision', 'fast_do', 'fast_locate']);
 
+// --- Batch inter-step navigation re-bind (BUG-2) ---------------------------
+// LIVE-SMOKE BUG: in fast_batch, when an earlier step navigates the tab (e.g. a
+// submit-button fast_click → results page), the NEXT step (notably fast_wait)
+// timed out at the 30s broker limit even though the navigation completed fine.
+// Cause: the click navigated the tab, the content script servicing the next step
+// died with the old page, and the next step fired into the dying/old document
+// (racing teardown), so its promise "waited on a corpse" and never resolved.
+//
+// The earlier fix keyed the settle off `willNavigate`, but that flag MISPREDICTS
+// — a form-submit click reported willNavigate:false yet DID navigate, so the
+// settle never fired. So the re-bind now triggers off ACTUAL navigation: we
+// capture the tab URL BEFORE a possibly-navigating step and watch for it to
+// change AFTER. On a real change we run the fast_nav-style settle (wait for the
+// NEW document to reach interactive|complete) BEFORE dispatching the next step,
+// so the next step binds to the live new page. `willNavigate`/nav-actions are
+// only a HINT that widens the detection window — never the trigger. All bounded,
+// so we can never re-introduce a 30s hang.
+const SETTLE_READY_BUDGET_MS = 8000;     // wait for the NEW doc to become ready
+const NAV_DETECT_MS = 2500;              // predicted/nav-action: window to observe the commit
+const NAV_DETECT_UNPREDICTED_MS = 700;   // backstop window for a MISPREDICTED nav
+const SETTLE_PROBE_TIMEOUT_MS = 1500;    // per readyState probe deadline (orphan, don't wait 30s)
+const SETTLE_POLL_GAP_MS = 150;          // gap between polls
+const SETTLE_INITIAL_GAP_MS = 100;       // let teardown/commit begin before first poll
+
+// Inherently-navigating actions whose result carries no willNavigate flag.
+const NAV_ACTIONS = new Set(['fast_nav', 'fast_reload']);
+
+// Steps that can drive a SAME-TAB navigation (so their inter-step result must be
+// checked for an actual URL change). Read-only steps and tab-switching steps
+// (fast_tab/fast_switch change the ACTIVE tab, not the page) are excluded so they
+// add zero latency and never trigger a false "navigated".
+const POSSIBLY_NAVIGATING = new Set([
+  'fast_click', 'fast_click_xy', 'fast_key', 'fast_key_press',
+  'fast_nav', 'fast_reload', 'fast_select_option', 'fast_drag', 'fast_drag_xy',
+]);
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// One bounded readyState probe. Resolves to the readyState string (or null on
+// timeout/error). Never rejects, and never blocks past `ms`: a late broker
+// resolution after the race is swallowed so it can't leak an unhandled
+// rejection or stall the poll loop.
+function probeReadyState(ms) {
+  const p = callExtension('fast_evaluate', { fn: '() => document.readyState' });
+  p.catch(() => {}); // swallow a late rejection once the race has moved on
+  return Promise.race([
+    p.then((r) => (r && typeof r === 'object' ? r.result : null)).catch(() => null),
+    sleep(ms).then(() => null),
+  ]);
+}
+
+// Read the target tab's current URL WITHOUT attaching the debugger (fast_list is
+// a plain chrome.tabs query → no "FastLink is debugging" banner toggle, so it
+// can't shift the viewport between batch steps the way fast_evaluate would).
+// Prefers the pinned target tab, else the active tab. '' on any failure.
+async function batchTabUrl() {
+  try {
+    const r = await callExtension('fast_list');
+    const tabs = r?.result;
+    if (!Array.isArray(tabs)) return '';
+    const t = tabs.find((x) => x && x.targetTab) || tabs.find((x) => x && x.active);
+    return t?.url || '';
+  } catch {
+    return '';
+  }
+}
+
+// Detect whether a step ACTUALLY navigated the tab and, if so, wait (bounded)
+// for the new document to be ready before the next step runs. `urlBefore` is the
+// tab URL captured BEFORE the step. `willNavigateHint` (the click's prediction)
+// and nav-actions only WIDEN the detection window — the trigger is the observed
+// URL change, never the hint. Returns the new URL on a settled navigation, else
+// null (no navigation → caller adds ~the detect window and moves on).
+async function settleIfNavigated(stepName, urlBefore, willNavigateHint) {
+  const isNavAction = NAV_ACTIONS.has(stepName);
+  const predicted = willNavigateHint === true || isNavAction;
+  const detectBudget = predicted ? NAV_DETECT_MS : NAV_DETECT_UNPREDICTED_MS;
+  await sleep(SETTLE_INITIAL_GAP_MS);
+  // Phase 1 — watch the committed URL change away from urlBefore (real nav).
+  let navUrl = null;
+  const detectDeadline = Date.now() + detectBudget;
+  while (Date.now() < detectDeadline) {
+    const url = await batchTabUrl();
+    if (url && urlBefore && url !== urlBefore) { navUrl = url; break; }
+    await sleep(SETTLE_POLL_GAP_MS);
+  }
+  // No URL change: no real navigation (covers a plain non-navigating click AND an
+  // over-predicted willNavigate that turned out to be an in-page / AJAX submit).
+  // Only a same-URL nav-action (reload / re-nav to the same URL) still needs a
+  // readyState settle even though the URL didn't change.
+  if (!navUrl && !isNavAction) return null;
+  // Phase 2 — wait until the (new) document answers interactive|complete so the
+  // next step binds to the live page, mirroring fast_nav's post-nav health-check.
+  const readyDeadline = Date.now() + SETTLE_READY_BUDGET_MS;
+  while (Date.now() < readyDeadline) {
+    const state = await probeReadyState(SETTLE_PROBE_TIMEOUT_MS);
+    if (state === 'interactive' || state === 'complete') break;
+    await sleep(SETTLE_POLL_GAP_MS);
+  }
+  return navUrl || (await batchTabUrl()) || urlBefore || '';
+}
+
 async function runBatch(args) {
   const actions = Array.isArray(args?.actions) ? args.actions : [];
   const continueOnError = !!args?.continueOnError;
@@ -928,6 +1193,11 @@ async function runBatch(args) {
       if (!continueOnError) break;
       continue;
     }
+    // Capture the URL BEFORE a possibly-navigating step that has a follower, so we
+    // can detect an ACTUAL navigation afterward (the in-flight commit may lag the
+    // step's own return, so before-vs-after is the only reliable signal).
+    const navCandidate = i < actions.length - 1 && POSSIBLY_NAVIGATING.has(step.name);
+    const urlBefore = navCandidate ? await batchTabUrl() : null;
     try {
       const r = await callExtension(step.name, step.args || {});
       if (r && r.error) {
@@ -935,6 +1205,11 @@ async function runBatch(args) {
         if (!continueOnError) break;
       } else {
         results.push({ step: i, name: step.name, ok: true, result: r.result });
+        // If this step actually navigated the tab, settle on the new document
+        // before dispatching the next step so it binds to the live page (BUG-2).
+        if (navCandidate) {
+          await settleIfNavigated(step.name, urlBefore, r.result && r.result.willNavigate);
+        }
       }
     } catch (e) {
       results.push({ step: i, name: step.name, ok: false, error: e.message });

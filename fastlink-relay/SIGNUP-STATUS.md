@@ -132,7 +132,7 @@ A **normal** claude.ai `/authorize` google flow has **no** ext redirect in its s
 > Two independent stages. **Stage A** (ship the integrated code in shared mode) is low-risk and changes no behavior. **Stage B** (turn on multi-user magic-link auto-pair) is the bigger flip and has prerequisites.
 
 ### Stage A — ship the code (still shared mode, no behavior change)
-From `/home/yaakov/code/Fastlink/fastlink-relay/` (wrangler on PATH, `CLOUDFLARE_API_TOKEN` set — see memory `reference_cloudflare_wrangler_auth`):
+From `<repo>/fastlink-relay/` (wrangler on PATH, `CLOUDFLARE_API_TOKEN` set):
 1. **Apply migration 0004 only** (rate-limit table — until applied, all limiters fail-open / no-op):
    `wrangler d1 migrations apply fastlink-relay --remote`
    _(0005 is Phase-2/DARK — do NOT apply it in Stage A.)_
@@ -160,7 +160,7 @@ From `/home/yaakov/code/Fastlink/fastlink-relay/` (wrangler on PATH, `CLOUDFLARE
 ### Stage C — Chrome Web Store (independent of A/B)
 - Build: `cd fast-ext && scripts/package.sh` → `dist/fastlink-0.4.0.zip`.
 - Host `fast-ext/store/PRIVACY-POLICY.md` at a public URL (required field).
-- Submit per `fast-ext/store/STORE-LISTING.md`. Private signing key stays at `/home/yaakov/code/Fastlink/fastlink-extension-signing-key.pem` (gitignored, never packaged).
+- Submit per `fast-ext/store/STORE-LISTING.md`. Private signing key stays at `<repo>/fastlink-extension-signing-key.pem` (gitignored, never packaged).
 
 ---
 

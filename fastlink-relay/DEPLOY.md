@@ -5,7 +5,7 @@ to claude.ai. Run everything from `fastlink-relay/` under WSL. Binding/secret
 names match **SPEC.md** (the contract).
 
 > **Auth is already handled.** `wrangler` is on PATH and `CLOUDFLARE_API_TOKEN`
-> is set in the environment (account `yjturetsky@gmail.com`), so every
+> is set in the environment (your Cloudflare account), so every
 > `wrangler` command below runs **non-interactively** — no `wrangler login`.
 > Verify with: `wrangler whoami`.
 

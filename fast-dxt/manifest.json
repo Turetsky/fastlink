@@ -6,7 +6,7 @@
   "description": "FastLink — page snapshots, clicks, console/network capture, and batch automation via a paired Chrome extension",
   "icon": "icons/icon-256.png",
   "author": {
-    "name": "Yaakov"
+    "name": "FastLink"
   },
   "tools": [
     {

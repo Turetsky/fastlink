@@ -140,7 +140,7 @@ We will update this policy as the product evolves and revise the "Last updated"
 date above.
 
 ## Contact
-Questions or data requests: **yjturetsky@gmail.com**
+Questions or data requests: **support@ytx.app**
 
 ---
 

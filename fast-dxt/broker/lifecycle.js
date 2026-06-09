@@ -1,6 +1,10 @@
 import { writeFileSync, unlinkSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 
-const PID_FILE = '/tmp/fastlink-broker.pid';
+// os.tmpdir() resolves to %TEMP% on Windows and /tmp on macOS/Linux/WSL, so the
+// broker's PID file is portable instead of assuming a Unix /tmp.
+const PID_FILE = join(tmpdir(), 'fastlink-broker.pid');
 const IDLE_MS = 60_000;
 const IDLE_POLL_MS = 5_000;
 

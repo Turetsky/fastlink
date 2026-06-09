@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>FastLink — Let Claude drive your browser</title>
+<meta name="description" content="FastLink is a Chrome extension that lets Claude read and drive your active tab — snapshot the DOM, click, fill forms, navigate and watch it work live, in your real browser and session. Works with Claude Code, Claude Desktop and claude.ai on the web." />
+<meta name="theme-color" content="#080A10" />
+<link rel="icon" type="image/svg+xml" href="favicon.svg" />
+
+<!-- Open Graph -->
+<meta property="og:title" content="FastLink — Let Claude drive your browser" />
+<meta property="og:description" content="A Chrome extension that lets Claude read and drive your active tab — in your real browser and session." />
+<meta property="og:type" content="website" />
+
+<!-- Fonts: distinctive display + clean body + technical mono -->
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700;12..96,800&family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+<!-- ============================ NAV ============================ -->
+<header class="nav" id="nav">
+  <div class="wrap nav-inner">
+    <a class="brand" href="#top" aria-label="FastLink home">
+      <svg class="mark" viewBox="0 0 64 64" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+        <defs><linearGradient id="nm" x1="14" y1="8" x2="50" y2="56" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#F5AE3C"/><stop offset="1" stop-color="#F3A52C"/></linearGradient></defs>
+        <rect x="3" y="3" width="58" height="58" rx="16" fill="#232D3F"/>
+        <rect x="3.75" y="3.75" width="56.5" height="56.5" rx="15.25" fill="none" stroke="url(#nm)" stroke-width="1.5" stroke-opacity="0.55"/>
+        <path d="M37 9 L19 35 H30 L27 55 L46 27 H34 L37 9 Z" fill="url(#nm)"/>
+        <circle cx="46" cy="27" r="3.2" fill="#232D3F" stroke="url(#nm)" stroke-width="2"/>
+        <circle cx="19" cy="35" r="3.2" fill="#232D3F" stroke="url(#nm)" stroke-width="2"/>
+      </svg>
+      <span><b>Fast</b><span>Link</span></span>
+    </a>
+    <nav class="nav-links" aria-label="Primary">
+      <a href="#how">How it works</a>
+      <a href="#features">Features</a>
+      <a href="#watch">Watch it work</a>
+      <a href="#trust">Trust &amp; safety</a>
+      <a href="#start">Get started</a>
+    </nav>
+    <div class="nav-cta">
+      <a class="btn btn-ghost btn-sm" href="https://github.com/" rel="noopener">GitHub</a>
+      <a class="btn btn-primary btn-sm" href="#start">Get FastLink</a>
+      <button class="nav-burger" id="burger" aria-label="Open menu" aria-expanded="false">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+      </button>
+    </div>
+  </div>
+</header>
+<div class="mobile-menu" id="mobileMenu">
+  <a href="#how">How it works</a>
+  <a href="#features">Features</a>
+  <a href="#watch">Watch it work</a>
+  <a href="#trust">Trust &amp; safety</a>
+  <a href="#start">Get started</a>
+</div>
+
+<main id="top">
+
+<!-- ============================ HERO ============================ -->
+<section class="hero wrap">
+  <div class="hero-grid">
+    <div class="hero-copy">
+      <span class="eyebrow reveal">Chrome extension · MV3</span>
+      <h1 class="reveal" data-d="1">Let Claude <span class="grad">drive your browser.</span></h1>
+      <p class="hero-sub reveal" data-d="2">
+        FastLink connects Claude to your <strong>active Chrome tab</strong> — it reads the page,
+        clicks, fills forms, navigates and captures console &amp; network, all in
+        <strong>your</strong> real browser and your own logged-in session.
+      </p>
+      <div class="surfaces reveal" data-d="2">
+        <span class="surface-chip"><b>Claude Code</b> CLI</span>
+        <span class="surface-chip"><b>Claude Desktop</b></span>
+        <span class="surface-chip"><b>claude.ai</b> web</span>
+      </div>
+      <div class="hero-actions reveal" data-d="3">
+        <a class="btn btn-primary" href="#start">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+          Add to Chrome
+        </a>
+        <a class="btn btn-ghost" href="#how">See how it works</a>
+      </div>
+      <div class="hero-trust reveal" data-d="3">
+        <span><i class="dot" style="background:var(--fl-success);color:var(--fl-success)"></i> Your browser, your session</span>
+        <span><i class="dot" style="background:var(--fl-accent);color:var(--fl-accent)"></i> Watch every action live</span>
+        <span><i class="dot" style="background:var(--fl-warn);color:var(--fl-warn)"></i> Per-site consent</span>
+      </div>
+    </div>
+
+    <!-- Hero visual: stylized browser being driven -->
+    <div class="hero-visual reveal" data-d="2" aria-hidden="true">
+      <div class="mock">
+        <div class="browser">
+          <div class="browser-bar">
+            <span class="tdot r"></span><span class="tdot y"></span><span class="tdot g"></span>
+            <span class="url">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 018 0v4"/></svg>
+              app.example.com/settings
+            </span>
+            <span class="ext-badge" title="FastLink connected">
+              <svg viewBox="0 0 24 24" fill="none" stroke="#F5AE3C" stroke-width="2.2"><path d="M13 2L4 14h7l-1 8 9-12h-7l1-8z"/></svg>
+              <span class="pulse"></span>
+            </span>
+          </div>
+          <div class="browser-body">
+            <div class="skel title"></div>
+            <div class="skel w90"></div>
+            <div class="skel w70"></div>
+            <div class="skel w50"></div>
+            <div class="mock-field"><span class="typed" id="typed"></span></div>
+            <div class="ai-cursor">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="#F5AE3C" stroke="#0B0E14" stroke-width="1.2"><path d="M5 3l15 9-6 1.5L17 20l-3 1-3-6.5L5 18z"/></svg>
+              <span class="tag">claude · fill</span>
+            </div>
+            <div class="driving">
+              <span class="live"></span>
+              <span class="txt"><b>Claude</b> is driving this tab — <b>filling “API key name”</b></span>
+              <span class="pause">⏸ pause</span>
+            </div>
+          </div>
+        </div>
+        <!-- floating side panel -->
+        <div class="sidecard">
+          <div class="sc-head">Transcript <span class="st"><i class="dot" style="background:var(--fl-success)"></i> working</span></div>
+          <div class="sc-line"><span class="ic">›</span> snapshot the page</div>
+          <div class="sc-line"><span class="ic">›</span> locate “Create key”</div>
+          <div class="sc-line"><span class="ic">›</span> fill name field…</div>
+          <div class="sc-line muted"><span class="ic">·</span> click Create</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ====================== SURFACES / LOGOS BAND ====================== -->
+<section class="logos">
+  <div class="wrap">
+    <span class="lbl">One extension · three Claude surfaces</span>
+    <span class="item">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="8 6 3 12 8 18"/><polyline points="16 6 21 12 16 18"/></svg>
+      Claude Code
+    </span>
+    <span class="item">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 20h8M12 17v3"/></svg>
+      Claude Desktop
+    </span>
+    <span class="item">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 010 18M12 3a14 14 0 000 18"/></svg>
+      claude.ai (web)
+    </span>
+  </div>
+</section>
+
+<!-- ======================== HOW IT WORKS ======================== -->
+<section id="how" class="section-pad">
+  <div class="wrap">
+    <span class="eyebrow reveal">How it works</span>
+    <h2 class="section-title reveal" data-d="1">Three moving parts. Your browser stays yours.</h2>
+    <p class="section-lede reveal" data-d="1">
+      FastLink is a Chrome MV3 extension plus a thin transport layer. Claude sends an instruction;
+      the extension performs it on the page in front of you and streams the result back.
+    </p>
+
+    <div class="flow">
+      <article class="node reveal">
+        <div class="glyph">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M9 8l3 3-3 3M14 14h2"/></svg>
+        </div>
+        <span class="step">01 — IN YOUR BROWSER</span>
+        <h3>The Chrome extension</h3>
+        <p>An MV3 extension drives the active tab: snapshot the DOM, click, fill, navigate, scroll, and read console &amp; network — robust even on heavy SPAs.</p>
+      </article>
+
+      <article class="node reveal" data-d="1">
+        <div class="glyph">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 12h4l2-5 4 10 2-5h4"/></svg>
+        </div>
+        <span class="step">02 — ON YOUR MACHINE</span>
+        <h3>Local WebSocket broker</h3>
+        <p>For Claude Code &amp; Desktop, a tiny local broker bridges the MCP server to the extension over WebSocket — one broker can fan out to several Claude sessions at once.</p>
+      </article>
+
+      <article class="node reveal" data-d="2">
+        <div class="glyph">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a7 7 0 017 7c0 4-7 13-7 13S5 13 5 9a7 7 0 017-7z"/><circle cx="12" cy="9" r="2.4"/></svg>
+        </div>
+        <span class="step">03 — FOR THE WEB</span>
+        <h3>Multi-tenant cloud relay</h3>
+        <p>So <strong>claude.ai on the web</strong> can reach you, a multi-tenant relay (Cloudflare Workers + Durable Objects) routes to <em>your own</em> browser — never a server’s.</p>
+      </article>
+    </div>
+    <p class="flow-foot reveal">claude → mcp → broker / relay → extension → your tab → result back to claude</p>
+  </div>
+</section>
+
+<!-- ========================= FEATURES ========================= -->
+<section id="features" class="section-pad">
+  <div class="wrap">
+    <span class="eyebrow reveal">Capabilities</span>
+    <h2 class="section-title reveal" data-d="1">Built for real pages, not demos.</h2>
+    <p class="section-lede reveal" data-d="1">From plain forms to canvas apps, FastLink picks the right strategy — fast DOM by default, vision when the DOM isn’t enough.</p>
+
+    <div class="features">
+      <article class="card col-3 reveal js-tilt">
+        <div class="ficon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 5h18M3 12h18M3 19h12"/><circle cx="19" cy="19" r="2"/></svg></div>
+        <h3>Fast DOM automation</h3>
+        <p>Click, fill, navigate, scroll and snapshot the live DOM in milliseconds. Engineered to stay responsive on heavy single-page apps instead of freezing the tab.</p>
+        <div class="tagrow"><span class="tag">click</span><span class="tag">fill</span><span class="tag">nav</span><span class="tag">snapshot</span></div>
+      </article>
+
+      <article class="card col-3 reveal js-tilt" data-d="1">
+        <div class="ficon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z"/></svg></div>
+        <h3>Vision tier</h3>
+        <p>When there’s no clean DOM target, FastLink locates by screenshot and does one-shot form-fills — working on <strong>canvas, iframes and non-DOM UIs</strong> that defeat selectors.</p>
+        <div class="tagrow"><span class="tag">locate</span><span class="tag">fill-vision</span><span class="tag">canvas</span><span class="tag">iframes</span></div>
+      </article>
+
+      <article class="card col-2 reveal js-tilt">
+        <div class="ficon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L4 14h7l-1 8 9-12h-7l1-8z"/></svg></div>
+        <h3>Scout pre-reads</h3>
+        <p>A fast page pre-read summarizes structure and intent up front, so Claude spends fewer round-trips finding its target.</p>
+      </article>
+
+      <article class="card col-2 reveal js-tilt" data-d="1">
+        <div class="ficon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16M18 8h.01M18 12h.01"/></svg></div>
+        <h3>Watch it work live</h3>
+        <p>A side panel and on-page overlay mirror Claude’s transcript and current action across all your tabs — in real time.</p>
+      </article>
+
+      <article class="card col-2 reveal js-tilt" data-d="2">
+        <div class="ficon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z"/><path d="M9 12l2 2 4-4"/></svg></div>
+        <h3>Consent &amp; control</h3>
+        <p>Per-site <strong>allow / read-only / block</strong>, plus one-click pause and disconnect. Nothing happens on a site you didn’t green-light.</p>
+      </article>
+
+      <article class="card col-6 reveal js-tilt">
+        <div class="ficon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 17l6-6-6-6M12 19h8"/></svg></div>
+        <h3>Console &amp; network capture, resilient on heavy pages</h3>
+        <p>FastLink reads console logs and network activity so Claude can debug what it’s driving — and its DOM strategy is tuned to keep working on dynamic, JS-heavy apps where naive automation hangs or times out.</p>
+        <div class="tagrow"><span class="tag">console</span><span class="tag">network</span><span class="tag">SPA-resilient</span><span class="tag">no-freeze</span></div>
+      </article>
+    </div>
+  </div>
+</section>
+
+<!-- ======================= WATCH IT WORK ======================= -->
+<section id="watch" class="section-pad" style="background:var(--fl-bg-2);border-block:1px solid var(--fl-border-soft)">
+  <div class="wrap">
+    <div class="watch-grid">
+      <div class="reveal">
+        <span class="eyebrow">Total visibility</span>
+        <h2 class="section-title">Watch Claude work — never wonder what it did.</h2>
+        <p class="section-lede">A live overlay sits on the page Claude is driving and a side panel mirrors the full transcript. A toolbar badge tells you the state at a glance, across every tab.</p>
+        <div class="state-list">
+          <div class="state-row"><i class="pip" style="background:var(--fl-success);color:var(--fl-success)"></i><b>connected</b><span>Linked and ready — green.</span></div>
+          <div class="state-row"><i class="pip" style="background:var(--fl-working);color:var(--fl-working)"></i><b>working</b><span>Claude is acting on the tab right now.</span></div>
+          <div class="state-row"><i class="pip" style="background:var(--fl-warn);color:var(--fl-warn)"></i><b>read-only</b><span>It can look but not touch.</span></div>
+          <div class="state-row"><i class="pip" style="background:var(--fl-stuck);color:var(--fl-stuck)"></i><b>stuck</b><span>It needs you — pause and step in.</span></div>
+          <div class="state-row"><i class="pip" style="background:var(--fl-danger);color:var(--fl-danger)"></i><b>blocked</b><span>This site is off-limits by your rule.</span></div>
+        </div>
+      </div>
+
+      <div class="reveal" data-d="1">
+        <div class="panel">
+          <div class="panel-head">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--fl-primary)" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/></svg>
+            <span class="ttl">FastLink · side panel</span>
+            <span class="badge working"><i class="dot" style="background:var(--fl-primary)"></i> working</span>
+          </div>
+          <div class="panel-body" id="transcript">
+            <div class="tline" data-seq="1"><span class="k">scout</span><span class="v">read <em>app.example.com/settings</em></span></div>
+            <div class="tline ok" data-seq="2"><span class="k">snapshot</span><span class="v">142 interactive nodes</span></div>
+            <div class="tline ok" data-seq="3"><span class="k">locate</span><span class="v">“Create API key” button</span></div>
+            <div class="tline ok" data-seq="4"><span class="k">fill</span><span class="v">name → <em>fastlink-demo</em></span></div>
+            <div class="tline" data-seq="5"><span class="k">click</span><span class="v">Create</span></div>
+            <div class="tline" data-seq="6"><span class="k">vision</span><span class="v">confirm key shown on canvas</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ======================= TRUST & SAFETY ======================= -->
+<section id="trust" class="section-pad">
+  <div class="wrap">
+    <span class="eyebrow reveal">Trust &amp; safety</span>
+    <h2 class="section-title reveal" data-d="1">Your browser. Your session. Your call.</h2>
+    <p class="section-lede reveal" data-d="1">FastLink doesn’t spin up a headless server with your cookies. It acts in the browser already in front of you — and you stay in the loop for every action.</p>
+
+    <div class="trust-grid">
+      <article class="trust-card reveal">
+        <div class="ti"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z"/></svg></div>
+        <div><h3>It’s your real browser</h3><p>No cloud profile, no exported credentials. Claude uses the session you’re already signed into — locally.</p></div>
+      </article>
+      <article class="trust-card reveal" data-d="1">
+        <div class="ti"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z"/></svg></div>
+        <div><h3>You see every action</h3><p>The overlay and transcript narrate each step as it happens. There’s no hidden activity.</p></div>
+      </article>
+      <article class="trust-card reveal">
+        <div class="ti"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="M9 12l2 2 4-4"/></svg></div>
+        <div><h3>Per-site consent</h3><p>Set <strong>allow</strong>, <strong>read-only</strong> or <strong>block</strong> for each site. Defaults are conservative; you opt in.</p></div>
+      </article>
+      <article class="trust-card reveal" data-d="1">
+        <div class="ti"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg></div>
+        <div><h3>Pause &amp; disconnect</h3><p>One click stops Claude mid-task or cuts the link entirely. You’re always one tap from taking the wheel.</p></div>
+      </article>
+    </div>
+
+    <!-- interactive consent demo -->
+    <div class="consent reveal" data-d="1">
+      <div class="ch">Per-site permissions — click to change (demo)</div>
+      <div class="consent-row">
+        <span class="site">github.com</span>
+        <div class="seg" role="group" aria-label="Permission for github.com">
+          <button data-v="allow" class="on">allow</button>
+          <button data-v="read">read-only</button>
+          <button data-v="block">block</button>
+        </div>
+      </div>
+      <div class="consent-row">
+        <span class="site">mail.google.com</span>
+        <div class="seg" role="group" aria-label="Permission for mail.google.com">
+          <button data-v="allow">allow</button>
+          <button data-v="read" class="on">read-only</button>
+          <button data-v="block">block</button>
+        </div>
+      </div>
+      <div class="consent-row">
+        <span class="site">bank.example.com</span>
+        <div class="seg" role="group" aria-label="Permission for bank.example.com">
+          <button data-v="allow">allow</button>
+          <button data-v="read">read-only</button>
+          <button data-v="block" class="on">block</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ========================= GET STARTED ========================= -->
+<section id="start" class="section-pad">
+  <div class="wrap start">
+    <span class="eyebrow reveal" style="justify-content:center">Get started</span>
+    <h2 class="section-title reveal" data-d="1">Up and running in three steps.</h2>
+    <p class="section-lede reveal" data-d="1" style="margin-inline:auto">Install the extension, connect your Claude surface, and pick which sites it can touch. DOM mode works out of the box.</p>
+
+    <div class="start-steps">
+      <article class="start-step reveal">
+        <div class="n">1</div>
+        <h3>Add FastLink to Chrome</h3>
+        <p>Install the MV3 extension and pin it. The toolbar badge shows your connection state.</p>
+      </article>
+      <article class="start-step reveal" data-d="1">
+        <div class="n">2</div>
+        <h3>Connect your Claude</h3>
+        <p>Run the MCP server for <strong>Code</strong> or <strong>Desktop</strong>, or link <code>relay.ytx.app</code> for <strong>claude.ai</strong> on the web.</p>
+      </article>
+      <article class="start-step reveal" data-d="2">
+        <div class="n">3</div>
+        <h3>Set consent &amp; go</h3>
+        <p>Choose allow / read-only / block per site. Add a free <strong>Gemini</strong> key to unlock vision &amp; scout.</p>
+      </article>
+    </div>
+
+    <div class="cta-final reveal">
+      <a class="btn btn-primary" href="#" id="addChrome">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 8h9M8 21l4-9M3.5 7l4.5 5"/></svg>
+        Add to Chrome
+      </a>
+      <span class="cta-note">Chrome Web Store link coming soon · DOM mode needs no API key · Gemini key (free) enables vision + scout</span>
+    </div>
+  </div>
+</section>
+
+<!-- ========================= FINAL CTA ========================= -->
+<section class="wrap" style="padding-bottom:var(--fl-s-9)">
+  <div class="cta-band reveal">
+    <span class="eyebrow" style="justify-content:center">Ready when you are</span>
+    <h2 style="margin-top:var(--fl-s-4)">Hand Claude the keyboard.</h2>
+    <p>Keep your hands on the wheel. FastLink lets Claude do the clicking while you watch every move — in the browser you already trust.</p>
+    <div class="hero-actions" style="justify-content:center;margin-top:var(--fl-s-6)">
+      <a class="btn btn-primary" href="#start">Get FastLink</a>
+      <a class="btn btn-ghost" href="#how">Read the architecture</a>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<!-- ============================ FOOTER ============================ -->
+<footer class="footer">
+  <div class="wrap">
+    <div class="footer-grid">
+      <div>
+        <a class="brand" href="#top" aria-label="FastLink home">
+          <svg class="mark" viewBox="0 0 64 64" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+            <defs><linearGradient id="fm" x1="14" y1="8" x2="50" y2="56" gradientUnits="userSpaceOnUse">
+              <stop offset="0" stop-color="#F5AE3C"/><stop offset="1" stop-color="#F3A52C"/></linearGradient></defs>
+            <rect x="3" y="3" width="58" height="58" rx="16" fill="#232D3F"/>
+            <rect x="3.75" y="3.75" width="56.5" height="56.5" rx="15.25" fill="none" stroke="url(#fm)" stroke-width="1.5" stroke-opacity="0.55"/>
+            <path d="M37 9 L19 35 H30 L27 55 L46 27 H34 L37 9 Z" fill="url(#fm)"/>
+            <circle cx="46" cy="27" r="3.2" fill="#232D3F" stroke="url(#fm)" stroke-width="2"/>
+            <circle cx="19" cy="35" r="3.2" fill="#232D3F" stroke="url(#fm)" stroke-width="2"/>
+          </svg>
+          <span><b>Fast</b><span>Link</span></span>
+        </a>
+        <p class="footer-about">Let Claude read and drive your active Chrome tab — in your real browser, your session, your control.</p>
+      </div>
+      <div class="footer-col">
+        <h4>Product</h4>
+        <a href="#how">How it works</a>
+        <a href="#features">Features</a>
+        <a href="#watch">Watch it work</a>
+        <a href="#trust">Trust &amp; safety</a>
+      </div>
+      <div class="footer-col">
+        <h4>Surfaces</h4>
+        <a href="#start">Claude Code</a>
+        <a href="#start">Claude Desktop</a>
+        <a href="#start">claude.ai web</a>
+      </div>
+      <div class="footer-col">
+        <h4>Resources</h4>
+        <a href="https://github.com/" rel="noopener">GitHub</a>
+        <a href="#start">Install guide</a>
+        <a href="#trust">Privacy &amp; consent</a>
+      </div>
+    </div>
+    <div class="footer-bottom">
+      <span class="legal">© <span id="yr"></span> FastLink — a Chrome extension for Claude.</span>
+      <span class="legal">Claude is a trademark of Anthropic. FastLink is an independent project.</span>
+    </div>
+  </div>
+</footer>
+
+<script src="main.js"></script>
+</body>
+</html>

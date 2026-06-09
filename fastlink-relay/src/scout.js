@@ -22,6 +22,14 @@
 //
 // See SPEC.md §3e, §12 and task #7.
 
+// ── Heavy-page guards (mirror of fast-dxt/server/scout.js) ──
+// A giant SPA (GCP) snapshot can carry thousands of interactive items; sending
+// them all to Gemini is slow AND degrades output (flash-lite returns empty JSON
+// on a huge prompt → empty briefs). Cap the digest, and bound the fetch so a
+// stuck Gemini call can't hang the tool call. Light pages stay below the cap.
+const MAX_SCOUT_ITEMS = 300;
+const GEMINI_TIMEOUT_MS = 12_000;
+
 export function createScout({ model } = {}) {
   const GEMINI_MODEL = model || 'gemini-2.5-flash-lite';
 
@@ -58,11 +66,23 @@ export function createScout({ model } = {}) {
       },
     };
     if (system) body.systemInstruction = { parts: [{ text: system }] };
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
-      body: JSON.stringify(body),
-    });
+    // Bound the fetch — a slow/stuck Gemini call must never hang the tool call.
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), GEMINI_TIMEOUT_MS);
+    let res;
+    try {
+      res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
+        body: JSON.stringify(body),
+        signal: ctrl.signal,
+      });
+    } catch (e) {
+      if (e && e.name === 'AbortError') throw new Error(`scout gemini timed out (${GEMINI_TIMEOUT_MS}ms)`);
+      throw e;
+    } finally {
+      clearTimeout(timer);
+    }
     if (!res.ok) {
       const errBody = await res.text().catch(() => '');
       throw new Error(`scout gemini ${res.status}: ${errBody.slice(0, 300)}`);
@@ -418,7 +438,26 @@ function slimDigest(d) {
     inOverlay: it.inOverlay || undefined,
   }));
   const content = (d.content || []).map((c) => c.text).filter(Boolean).slice(0, 40);
-  return { url: d.url, title: d.title, items, content };
+  const capped = capItems(items);
+  return {
+    url: d.url, title: d.title, items: capped.items, content,
+    itemsTotal: capped.truncated ? items.length : undefined,
+    itemsTruncated: capped.truncated || undefined,
+  };
+}
+
+// Cap the item list sent to Gemini — labeled items first, then backfill to the
+// cap. No-op below the cap (light pages). Mirror of fast-dxt/server/scout.js.
+function capItems(items) {
+  if (items.length <= MAX_SCOUT_ITEMS) return { items, truncated: false };
+  const labeled = [];
+  const bare = [];
+  for (const it of items) {
+    (it.text || it.label || it.ariaLabel || it.placeholder || it.name ? labeled : bare).push(it);
+  }
+  const kept = labeled.slice(0, MAX_SCOUT_ITEMS);
+  for (const it of bare) { if (kept.length >= MAX_SCOUT_ITEMS) break; kept.push(it); }
+  return { items: kept, truncated: true };
 }
 
 function normalizeSteps(steps) {

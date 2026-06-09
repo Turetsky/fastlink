@@ -1,13 +1,14 @@
 import { WebSocketServer } from 'ws';
-import { state } from './state.js';
+import { state, EXT_PORTS } from './state.js';
 import { log, onFatalListenError } from './lifecycle.js';
 import { onExtensionResponse, failPendingForSocket } from './router.js';
 import { mcpClientCount, broadcastToMcp } from './mcpBridge.js';
 import { attachHeartbeat, startHeartbeatLoop } from './heartbeat.js';
 
-// One port per install. Two extensions running side-by-side never collide
-// because they target different sockets — no race-reconnect.
-const EXT_PORTS = { yaakov: 9876, dad: 9877 };
+// One port per install (EXT_PORTS, imported from state.js as the single source
+// of truth: { primary: 9876, secondary: 9877 }). Two extensions running side-by-
+// side never collide because they target different sockets — no race-reconnect.
+// The port's own EXT_PORTS key IS that port's DEFAULT install id.
 
 // 2-second grace for the extension to send {type:'hello', installId} after
 // connect. If it doesn't, we fall back to the install mapped to the port —

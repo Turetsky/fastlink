@@ -40,26 +40,75 @@ export async function handleScout(relay, scout, args) {
   const macros = Array.isArray(raw?.macros) ? raw.macros : (Array.isArray(raw) ? raw : []);
 
   let result;
+  let degraded = false; // a DOM tier timed out / came back capped|partial → go vision
   for (let t = 0; t < SNAPSHOT_TIERS.length; t++) {
     const tier = SNAPSHOT_TIERS[t];
     const last = t === SNAPSHOT_TIERS.length - 1;
-    const snap = await relay.callExtension('fast_snapshot', tier.snap);
-    if (snap?.error) { if (last) return { error: snap.error }; continue; }
+    const snap = await scoutSnapshot(relay, tier.snap);
+    if (snap?.error) { degraded = true; if (last) break; continue; }
     const digest = snap?.result;
     if (!digest || !Array.isArray(digest.items)) {
-      if (last) return { error: 'scout: snapshot returned no items (content script may be stale — reload the tab)' };
+      if (last) { degraded = true; break; }
       continue;
     }
+    const heavy = !!(digest.capped || digest.partial || digest.snapshotTimedOut);
     result = await scout.scout({ intent, digest, macros });
     result.tier = tier.label;
+    // READ MODE on a HEAVY page: DOM index too sparse to summarize → vision read.
+    if (!intent && !result.disabled && heavy) {
+      const vis = await visionScoutRead(relay, scout, null);
+      if (vis) return vis;
+    }
     if (!intent || result.disabled || !result.needMore) return result;
+    // HEAVY-PAGE SHORT-CIRCUIT: degraded snapshot → don't escalate onto bigger DOM
+    // tiers (they'd just hang on the same giant DOM); go to vision below.
+    if (heavy) { degraded = true; break; }
   }
-  // DOM tiers exhausted but Gemini still wants more → SCREENSHOT rung.
-  if (intent && result && result.needMore) {
+  // INTENT MODE, DOM tiers exhausted/degraded → SCREENSHOT rung.
+  if (intent && ((result && result.needMore) || degraded)) {
     const located = await screenshotRung(relay, scout, intent);
     if (located) return located;
+    const vis = await visionScoutRead(relay, scout, intent);
+    if (vis) return { ...(result || {}), ...vis };
   }
-  return result;
+  // READ MODE where every DOM tier errored/timed out → screenshot→Gemini read.
+  if (!intent && (degraded || !result)) {
+    const vis = await visionScoutRead(relay, scout, null);
+    if (vis) return vis;
+  }
+  return result || {
+    error: 'scout: no usable snapshot (page heavy/unresponsive). Try fast_screenshot, fast_point, or reload the tab.',
+  };
+}
+
+// Per-tier snapshot deadline (mirror of handlers.js). The extension serialize is
+// self-bounded, but a wedged renderer can burn the full 30s per tier — race each
+// snapshot against a tighter deadline so fast_scout stays responsive on heavy
+// pages instead of stacking 30s timeouts across three tiers.
+const SCOUT_SNAPSHOT_TIMEOUT_MS = 8000;
+async function scoutSnapshot(relay, snapArgs) {
+  const snapP = relay.callExtension('fast_snapshot', snapArgs);
+  const timeoutP = new Promise((resolve) =>
+    setTimeout(() => resolve({ error: 'scout: snapshot timed out (page too heavy/unresponsive)' }), SCOUT_SNAPSHOT_TIMEOUT_MS));
+  return Promise.race([snapP, timeoutP]);
+}
+
+// Screenshot→Gemini page comprehension — the DOM-INDEPENDENT scout read, used
+// when the DOM index is too heavy/degraded to summarize (GCP and other giant
+// SPAs). Best-effort: returns null on any failure so the caller can fall back.
+// No warm-capture reuse in cloud v1 — always a fresh capture.
+async function visionScoutRead(relay, scout, intent) {
+  try {
+    const cap = await captureForVision(relay);
+    if (cap.error || !cap.dataUrl) return null;
+    const vm = await scout.visualMap(cap.url || '', cap.dataUrl);
+    if (!vm || vm.disabled) return null;
+    return { tier: 'vision', via: 'screenshot', warmed: !!vm.warmed, url: cap.url,
+             summary: vm.summary, regions: vm.regions,
+             intent: intent || undefined, note: 'heavy DOM — vision (screenshot) read' };
+  } catch {
+    return null;
+  }
 }
 
 async function screenshotRung(relay, scout, intent, candidateIds) {
@@ -432,32 +481,85 @@ export async function handleLocate(relay, scout, args) {
     return { via: 'vision', xCss: p.xCss, yCss: p.yCss, found: true, target };
   })().catch(() => null);
 
-  const winner = await raceUsable([domTier, visionTier]);
-  return winner || { via: null, found: false, target };
+  const winner = await pickLocateWinner(domTier, visionTier);
+  if (winner) return winner;
+  return { via: null, found: false, target };
 }
 
-// Resolve with the FIRST promise that yields a truthy value; null if all fail.
-function raceUsable(promises) {
+// DOM-PREFERRING race. The DOM tier is more precise (real element box, no model
+// jitter) and on a simple page should trivially win — but it pays a full
+// snapshot round-trip while vision returns a warm Gemini point in ~700ms, so a
+// naive "first truthy wins" lets vision steal pages DOM would have nailed
+// (httpbin's labeled <textarea> — the reported bug). Rules:
+//   • DOM hit  → DOM wins immediately (most precise, no reason to wait).
+//   • DOM miss (resolved null, not hung) → take vision as soon as DOM confirms
+//     the miss; no need to burn the grace window.
+//   • DOM still pending when vision returns a hit → hold the vision hit for a
+//     short GRACE window so a slightly-slower DOM snapshot can still win; if
+//     grace elapses with no DOM hit, accept vision.
+//   • Both miss → null.
+// Bounded throughout: domTier self-caps at LOCATE_DOM_TIMEOUT_MS (resolving
+// null), and a hard LOCATE_MAX_MS ceiling resolves with the best hit so far so a
+// wedged vision call can never hang the tool.
+const LOCATE_DOM_GRACE_MS = 1200;
+const LOCATE_MAX_MS = 8000;
+function pickLocateWinner(domP, visionP) {
   return new Promise((resolve) => {
-    let remaining = promises.length;
-    if (!remaining) return resolve(null);
-    const settle = (v) => { if (v) resolve(v); else if (--remaining === 0) resolve(null); };
-    for (const p of promises) Promise.resolve(p).then(settle, () => settle(null));
+    let settled = false;
+    let domDone = false, visionDone = false;
+    let domHit = null, visionHit = null;
+    let graceTimer = null, hardTimer = null;
+    const finish = (v) => {
+      if (settled) return;
+      settled = true;
+      if (graceTimer) clearTimeout(graceTimer);
+      if (hardTimer) clearTimeout(hardTimer);
+      resolve(v || null);
+    };
+    hardTimer = setTimeout(() => finish(domHit || visionHit), LOCATE_MAX_MS);
+
+    Promise.resolve(domP).then((v) => {
+      domDone = true; domHit = v || null;
+      if (domHit) return finish(domHit);          // DOM wins outright
+      if (visionDone) return finish(visionHit);   // DOM confirmed a miss → vision
+      // else: DOM missed but vision not back yet → wait for vision branch.
+    }, () => { domDone = true; if (visionDone) finish(visionHit); });
+
+    Promise.resolve(visionP).then((v) => {
+      visionDone = true; visionHit = v || null;
+      if (domDone) return finish(visionHit);       // DOM already settled (a miss)
+      // DOM still pending — prefer it: hold a vision hit through the grace window.
+      if (visionHit) graceTimer = setTimeout(() => finish(visionHit), LOCATE_DOM_GRACE_MS);
+      // vision missed too → let the DOM branch decide when it settles.
+    }, () => { visionDone = true; if (domDone) finish(domHit); });
   });
 }
 
 // === DOM matching helpers ===================================================
 
 function matchItem(items, target) {
-  const q = target.toLowerCase().trim();
+  // Normalize for matching: lowercase, collapse whitespace, and strip a trailing
+  // ":" / "：" (+ whitespace). A <label> is commonly rendered "Delivery
+  // instructions:" while the caller's target is "Delivery instructions" (or vice
+  // versa) — without trimming the trailing colon those never match exactly, and
+  // a colon-terminated query fails the substring test against a colon-less field.
+  const norm = (s) => (s || '').toLowerCase().replace(/\s+/g, ' ').replace(/[:：\s]+$/, '').trim();
+  const q = norm(target);
+  if (!q) return null;
   const hasCoords = (it) => ['x', 'y', 'w', 'h'].every((k) => typeof it[k] === 'number');
-  const fields = (it) => [it.text, it.label, it.ariaLabel, it.placeholder, it.name, it.role, it.href]
-    .filter(Boolean).join(' ').toLowerCase();
+  const fields = (it) => norm([it.text, it.label, it.ariaLabel, it.placeholder, it.name, it.role, it.href]
+    .filter(Boolean).join(' '));
   let best = items.find((it) => hasCoords(it) && fields(it) === q);
   if (!best) best = items.find((it) => hasCoords(it) && fields(it).includes(q));
   if (!best) {
     const words = q.split(/\s+/).filter(Boolean);
-    if (words.length) best = items.find((it) => { const f = fields(it); return hasCoords(it) && words.every((w) => f.includes(w)); });
+    // Include the tag in the per-word search so a control phrased with its type
+    // ("delivery instructions textarea", "submit button") still resolves — every
+    // word must be present, so the tag only confirms an already-strong match.
+    if (words.length) best = items.find((it) => {
+      const f = (fields(it) + ' ' + norm(it.tag));
+      return hasCoords(it) && words.every((w) => f.includes(w));
+    });
   }
   if (!best) return null;
   return { xCss: Math.round(best.x + best.w / 2), yCss: Math.round(best.y + best.h / 2) };

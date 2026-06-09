@@ -317,6 +317,105 @@ async function relayStatus(relay) {
   };
 }
 
+// --- Batch inter-step navigation re-bind (BUG-2) ---------------------------
+// LIVE-SMOKE BUG (claude.ai web → this relay): in fast_batch, when an earlier
+// step navigates the tab (e.g. a submit-button fast_click → results page), the
+// NEXT step (notably fast_wait) timed out at the broker/DO limit even though the
+// navigation completed fine. Cause: the click navigated the tab, the content
+// script servicing the next step died with the old page, and the next step fired
+// into the dying/old document (racing teardown) — it "waited on a corpse".
+//
+// The earlier fix keyed the settle off `willNavigate`, but that flag MISPREDICTS
+// (a form-submit click reported willNavigate:false yet DID navigate), so it never
+// fired. So the re-bind now triggers off ACTUAL navigation: capture the tab URL
+// BEFORE a possibly-navigating step, watch for it to change AFTER, and on a real
+// change run the fast_nav-style settle (wait for the NEW document to reach
+// interactive|complete) BEFORE dispatching the next step. `willNavigate`/
+// nav-actions only WIDEN the detection window — never the trigger. All bounded,
+// so the relay can never re-introduce a long hang. Mirrors fast-dxt/server/
+// handlers.js; the probes forward through relay.callExtension.
+const SETTLE_READY_BUDGET_MS = 8000;     // wait for the NEW doc to become ready
+const NAV_DETECT_MS = 2500;              // predicted/nav-action: window to observe the commit
+const NAV_DETECT_UNPREDICTED_MS = 700;   // backstop window for a MISPREDICTED nav
+const SETTLE_PROBE_TIMEOUT_MS = 1500;    // per readyState probe deadline (orphan, don't wait for the broker limit)
+const SETTLE_POLL_GAP_MS = 150;          // gap between polls
+const SETTLE_INITIAL_GAP_MS = 100;       // let teardown/commit begin before first poll
+
+// Inherently-navigating actions whose result carries no willNavigate flag.
+const NAV_ACTIONS = new Set(['fast_nav', 'fast_reload']);
+
+// Steps that can drive a SAME-TAB navigation (so their inter-step result must be
+// checked for an actual URL change). Read-only and tab-switching steps are
+// excluded so they add zero latency and never trigger a false "navigated".
+const POSSIBLY_NAVIGATING = new Set([
+  'fast_click', 'fast_click_xy', 'fast_key', 'fast_key_press',
+  'fast_nav', 'fast_reload', 'fast_select_option', 'fast_drag', 'fast_drag_xy',
+]);
+
+const settleSleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// One bounded readyState probe through the relay's forward path. Resolves to the
+// readyState string (or null on timeout/error). Never rejects, and never blocks
+// past `ms`: a late relay resolution after the race is swallowed so it can't leak
+// an unhandled rejection or stall the poll loop.
+function probeReadyState(relay, ms) {
+  const p = relay.callExtension('fast_evaluate', { fn: '() => document.readyState' });
+  p.catch(() => {}); // swallow a late rejection once the race has moved on
+  return Promise.race([
+    p.then((r) => (r && typeof r === 'object' ? r.result : null)).catch(() => null),
+    settleSleep(ms).then(() => null),
+  ]);
+}
+
+// Read the target tab's current URL WITHOUT attaching the debugger (fast_list is
+// a plain chrome.tabs query → no "FastLink is debugging" banner toggle, so it
+// can't shift the viewport between batch steps). Prefers the pinned target tab,
+// else the active tab. '' on any failure.
+async function batchTabUrl(relay) {
+  try {
+    const r = await relay.callExtension('fast_list');
+    const tabs = r?.result;
+    if (!Array.isArray(tabs)) return '';
+    const t = tabs.find((x) => x && x.targetTab) || tabs.find((x) => x && x.active);
+    return t?.url || '';
+  } catch {
+    return '';
+  }
+}
+
+// Detect whether a step ACTUALLY navigated the tab and, if so, wait (bounded)
+// for the new document to be ready before the next step runs. `urlBefore` is the
+// tab URL captured BEFORE the step. `willNavigateHint` and nav-actions only WIDEN
+// the detection window — the trigger is the observed URL change. Returns the new
+// URL on a settled navigation, else null (no navigation).
+async function settleIfNavigated(relay, stepName, urlBefore, willNavigateHint) {
+  const isNavAction = NAV_ACTIONS.has(stepName);
+  const predicted = willNavigateHint === true || isNavAction;
+  const detectBudget = predicted ? NAV_DETECT_MS : NAV_DETECT_UNPREDICTED_MS;
+  await settleSleep(SETTLE_INITIAL_GAP_MS);
+  // Phase 1 — watch the committed URL change away from urlBefore (real nav).
+  let navUrl = null;
+  const detectDeadline = Date.now() + detectBudget;
+  while (Date.now() < detectDeadline) {
+    const url = await batchTabUrl(relay);
+    if (url && urlBefore && url !== urlBefore) { navUrl = url; break; }
+    await settleSleep(SETTLE_POLL_GAP_MS);
+  }
+  // No URL change: no real navigation (plain non-navigating click, or an
+  // over-predicted willNavigate that was an in-page/AJAX submit). Only a same-URL
+  // nav-action (reload / re-nav to the same URL) still needs a readyState settle.
+  if (!navUrl && !isNavAction) return null;
+  // Phase 2 — wait until the (new) document answers interactive|complete so the
+  // next step binds to the live page, mirroring fast_nav's post-nav health-check.
+  const readyDeadline = Date.now() + SETTLE_READY_BUDGET_MS;
+  while (Date.now() < readyDeadline) {
+    const state = await probeReadyState(relay, SETTLE_PROBE_TIMEOUT_MS);
+    if (state === 'interactive' || state === 'complete') break;
+    await settleSleep(SETTLE_POLL_GAP_MS);
+  }
+  return navUrl || (await batchTabUrl(relay)) || urlBefore || '';
+}
+
 // Run several extension actions in one call (mirrors handlers.js runBatch). Each
 // step runs only if the prior succeeded unless continueOnError is set.
 async function runBatch(args, relay) {
@@ -350,6 +449,11 @@ async function runBatch(args, relay) {
       if (!continueOnError) break;
       continue;
     }
+    // Capture the URL BEFORE a possibly-navigating step that has a follower, so we
+    // can detect an ACTUAL navigation afterward (the in-flight commit may lag the
+    // step's own return, so before-vs-after is the only reliable signal).
+    const navCandidate = i < actions.length - 1 && POSSIBLY_NAVIGATING.has(step.name);
+    const urlBefore = navCandidate ? await batchTabUrl(relay) : null;
     try {
       const r = await relay.callExtension(step.name, step.args || {});
       relay.audit(step.name, step.args, !(r && r.error)); // best-effort
@@ -358,6 +462,11 @@ async function runBatch(args, relay) {
         if (!continueOnError) break;
       } else {
         results.push({ step: i, name: step.name, ok: true, result: r.result });
+        // If this step actually navigated the tab, settle on the new document
+        // before dispatching the next step so it binds to the live page (BUG-2).
+        if (navCandidate) {
+          await settleIfNavigated(relay, step.name, urlBefore, r.result && r.result.willNavigate);
+        }
       }
     } catch (e) {
       results.push({ step: i, name: step.name, ok: false, error: e.message });

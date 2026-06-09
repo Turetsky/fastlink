@@ -1,0 +1,152 @@
+/* ===========================================================================
+ * FastLink brand theme — single source of truth for color, type, radius,
+ * spacing and shadow across every extension surface.
+ *
+ * Linked by the HTML pages: popup.html, onboarding.html, sidepanel.html
+ * (relative path `src/theme.css`). Injected shadow-DOM overlays (src/overlay.js
+ * and src/transcriptOverlay.js) build their CSS in JS and therefore INLINE the
+ * same dark-palette hex values — keep those literals in sync with the DARK
+ * block below. options.html/options.js should adopt these same variables.
+ *
+ * Brand idea: FastLink is a precision relay between Claude and your browser.
+ * Electric indigo = the trusted link/action; cyan "signal" = live data moving.
+ * Cool slate neutrals = a calm, technical instrument. Functional state colors
+ * keep their meaning everywhere: green=connected, amber=connecting,
+ * red=disconnected, orange=stuck.
+ * ======================================================================== */
+
+:root {
+  /* Brand */
+  --fl-primary:        #232D3F;
+  --fl-primary-hover:  #1A2331;
+  --fl-primary-press:  #131A26;
+  --fl-on-primary:     #FFFFFF;
+  --fl-signal:         #F3A52C;            /* amber accent — CTAs/active (light) */
+  --fl-on-accent:      #241803;            /* ink for text on amber accent      */
+  --fl-signal-soft:    rgba(243,165,44,0.12);
+
+  /* Neutrals — LIGHT */
+  --fl-bg:             #F5F6F8;
+  --fl-surface:        #FFFFFF;
+  --fl-surface-2:      #EDEFF3;
+  --fl-border:         #E1E4EA;
+  --fl-border-strong:  #CFD4DD;
+  --fl-text:           #1B2230;
+  --fl-text-dim:       #586273;
+  --fl-text-faint:     #8A93A2;
+
+  /* Semantic states — LIGHT (text = readable foreground, bg = soft fill) */
+  --fl-ok:        #2EA66A;  --fl-ok-bg:    #E6F4ED;  --fl-ok-text:    #1E7A4C;
+  --fl-warn:      #D6A417;  --fl-warn-bg:  #FAF4E3;  --fl-warn-text:  #8A6A0E;
+  --fl-err:       #DB3B3B;  --fl-err-bg:   #FBE8E8;  --fl-err-text:   #B02E2E;
+  --fl-stuck:     #E5731F;  --fl-stuck-bg: #FCEEE4;  --fl-stuck-text: #B85718;
+  --fl-read:      #232D3F;  --fl-read-bg:  #E5E6E8;  --fl-read-text:  #1A2331;
+
+  /* Type — matched to the marketing site (fastlink-site) so the extension and
+   * the site read as one brand. Display = Bricolage Grotesque (headings/wordmark),
+   * body = Hanken Grotesk, mono = JetBrains Mono (uppercase labels). Each keeps a
+   * system fallback for offline / pre-webfont-load paint. The HTML pages load these
+   * three families from Google Fonts; injected shadow-DOM overlays cannot easily
+   * pull a webfont, so they fall back to these system stacks. */
+  --fl-font-display: "Bricolage Grotesque", "Hanken Grotesk", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --fl-font: "Hanken Grotesk", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --fl-mono: "JetBrains Mono", ui-monospace, "SF Mono", "Menlo", "Consolas", monospace;
+
+  /* Radius */
+  --fl-r-sm:   6px;
+  --fl-r:      9px;
+  --fl-r-lg:   12px;
+  --fl-r-pill: 999px;
+
+  /* Shadow */
+  --fl-shadow-sm: 0 1px 2px rgba(16,20,34,0.06);
+  --fl-shadow:    0 8px 24px rgba(16,20,34,0.14);
+
+  /* Glass (overlays) — light context still uses the dark glass for legibility */
+  --fl-glass:      rgba(20,22,28,0.72);
+  --fl-glass-line: rgba(255,255,255,0.08);
+
+  /* Amber CTA glow + dark-glass card surface — matches the marketing site's
+   * atmospheric "control room" look. `--fl-glass-card` resolves `--fl-surface`
+   * at use-time, so on the forced-dark pages it picks up the dark surface. */
+  --fl-glow:        0 0 0 1px rgba(245,174,60,0.28), 0 16px 42px -16px rgba(245,174,60,0.50);
+  --fl-glow-strong: 0 0 0 1px rgba(245,174,60,0.50), 0 22px 54px -16px rgba(245,174,60,0.66);
+  --fl-glass-card:  color-mix(in srgb, var(--fl-surface) 80%, transparent);
+}
+
+/* Neutrals + states — DARK. Applied automatically by OS preference, or forced
+ * via [data-fl-theme="dark"] (sidepanel is always dark glass). */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --fl-signal:        #F5AE3C;
+    --fl-on-accent:     #241803;
+    --fl-signal-soft:   rgba(245,174,60,0.14);
+
+    --fl-bg:            #0E1219;
+    --fl-surface:       #161C27;
+    --fl-surface-2:     #1E2531;
+    --fl-border:        #2A323F;
+    --fl-border-strong: #3A4350;
+    --fl-text:          #E9ECF2;
+    --fl-text-dim:      #9BA5B5;
+    --fl-text-faint:    #5F6B7E;
+
+    --fl-ok:    #3FBE7D; --fl-ok-bg:    rgba(63,190,125,0.14); --fl-ok-text:    #6FD7A0;
+    --fl-warn:  #E6B62C; --fl-warn-bg:  rgba(230,182,44,0.15); --fl-warn-text:  #F2CE63;
+    --fl-err:   #F26A6A; --fl-err-bg:   rgba(242,106,106,0.15);--fl-err-text:   #FF9091;
+    --fl-stuck: #F0863A; --fl-stuck-bg: rgba(240,134,58,0.16); --fl-stuck-text: #F6A36A;
+    --fl-read:  #7A8699; --fl-read-bg:  rgba(122,134,153,0.16); --fl-read-text:  #A4AFC0;
+
+    --fl-shadow-sm: 0 1px 2px rgba(0,0,0,0.4);
+    --fl-shadow:    0 8px 24px rgba(0,0,0,0.4);
+  }
+}
+
+:root[data-fl-theme="dark"] {
+  --fl-signal:        #F5AE3C;
+  --fl-on-accent:     #241803;
+  --fl-signal-soft:   rgba(245,174,60,0.14);
+
+  --fl-bg:            #0E1219;
+  --fl-surface:       #161C27;
+  --fl-surface-2:     #1E2531;
+  --fl-border:        #2A323F;
+  --fl-border-strong: #3A4350;
+  --fl-text:          #E9ECF2;
+  --fl-text-dim:      #9BA5B5;
+  --fl-text-faint:    #5F6B7E;
+
+  --fl-ok:    #3FBE7D; --fl-ok-bg:    rgba(63,190,125,0.14); --fl-ok-text:    #6FD7A0;
+  --fl-warn:  #E6B62C; --fl-warn-bg:  rgba(230,182,44,0.15); --fl-warn-text:  #F2CE63;
+  --fl-err:   #F26A6A; --fl-err-bg:   rgba(242,106,106,0.15);--fl-err-text:   #FF9091;
+  --fl-stuck: #F0863A; --fl-stuck-bg: rgba(240,134,58,0.16); --fl-stuck-text: #F6A36A;
+  --fl-read:  #7A8699; --fl-read-bg:  rgba(122,134,153,0.16); --fl-read-text:  #A4AFC0;
+
+  --fl-shadow-sm: 0 1px 2px rgba(0,0,0,0.4);
+  --fl-shadow:    0 8px 24px rgba(0,0,0,0.4);
+}
+
+/* ---- Shared brand primitives (opt-in classes for the HTML pages) ---------- */
+
+.fl-brand {
+  display: flex; align-items: center; gap: 8px;
+}
+.fl-mark {
+  flex: none; width: 22px; height: 22px; border-radius: 7px;
+  display: block; overflow: hidden;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.25);
+}
+.fl-mark svg { display: block; width: 100%; height: 100%; }
+.fl-wordmark {
+  font-family: var(--fl-font-display);
+  font-weight: 700; letter-spacing: -0.01em; line-height: 1;
+}
+.fl-wordmark .lk { color: var(--fl-signal); }
+
+/* Connection / status dot */
+.fl-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--fl-text-faint); }
+.fl-dot.ok    { background: var(--fl-ok);    box-shadow: 0 0 0 3px var(--fl-ok-bg); }
+.fl-dot.warn  { background: var(--fl-warn);  box-shadow: 0 0 0 3px var(--fl-warn-bg); }
+.fl-dot.err   { background: var(--fl-err);   box-shadow: 0 0 0 3px var(--fl-err-bg); }
+.fl-dot.stuck { background: var(--fl-stuck); box-shadow: 0 0 0 3px var(--fl-stuck-bg); }
+.fl-dot.read  { background: var(--fl-read);  box-shadow: 0 0 0 3px var(--fl-read-bg); }

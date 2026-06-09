@@ -1,0 +1,5 @@
+# Cloudflare Pages redirects. Add a Web Store deep-link here once published, e.g.:
+# /install   https://chromewebstore.google.com/detail/<extension-id>   302
+
+# SPA-style fallback (harmless for this single page):
+/*    /index.html   200

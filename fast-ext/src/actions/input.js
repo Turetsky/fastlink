@@ -1,4 +1,4 @@
-import { getInjectableTab } from '../util.js';
+import { getInjectableTab, injectInTab } from '../util.js';
 
 const CDP_VERSION = '1.3';
 
@@ -25,23 +25,30 @@ try {
   });
 } catch {}
 
-// `debugger` is now an OPTIONAL permission (requested on demand from the popup/
-// options "Advanced control" toggle). Every CDP path — coordinate input
-// (click_xy/type/key/wheel/drag_xy), fast_evaluate, and background-tab / GPU-
-// fallback capture — funnels through cdp(), so this single guard makes the whole
-// debugger surface degrade gracefully: a clear, actionable error instead of a
-// raw "Cannot access" throw when the user hasn't granted it. DOM actions
-// (snapshot, selector click/fill) use chrome.scripting and never reach here.
-async function ensureDebuggerPermission() {
-  let has = false;
-  try { has = await chrome.permissions.contains({ permissions: ['debugger'] }); } catch {}
-  if (!has) {
+// `debugger` MUST stay a REQUIRED manifest permission (MV3 rejects it as
+// optional), so "Advanced control" is now a SOFT runtime toggle: the
+// chrome.storage.local `advancedControl` flag (default ON when unset — the
+// permission is granted, so the capability is available unless the user
+// explicitly turns it off in the popup/options). Every CDP path — coordinate
+// input (click_xy/type/key/wheel/drag_xy), fast_evaluate, and background-tab /
+// GPU-fallback capture — funnels through cdp(), so this single guard makes the
+// whole debugger surface degrade gracefully when the flag is OFF: a clear,
+// actionable error instead of acting. DOM actions (snapshot, selector
+// click/fill) use chrome.scripting and never reach here, and the capture tools'
+// chrome.tabs.captureVisibleTab fallback is NOT gated (it's not CDP).
+const ADVANCED_CONTROL_KEY = 'advancedControl';
+async function ensureAdvancedControl() {
+  let on = true; // default ON when the flag is unset
+  try {
+    const o = await chrome.storage.local.get(ADVANCED_CONTROL_KEY);
+    if (o && o[ADVANCED_CONTROL_KEY] === false) on = false;
+  } catch {}
+  if (!on) {
     const e = new Error(
-      'This needs FastLink’s optional "Advanced control" (debugger) permission — used for coordinate ' +
-      'clicks/typing, running scripts, and capturing background tabs. Enable it in the FastLink popup or ' +
-      'options → "Advanced control", then retry. DOM-based clicking and form-filling work without it.'
+      'Advanced control is OFF — enable it in the FastLink popup/options to use coordinate ' +
+      'clicks/typing, scripts, and background-tab capture. DOM-based clicking and form-filling work without it.'
     );
-    e.code = 'debugger_permission_required';
+    e.code = 'advanced_control_off';
     throw e;
   }
 }
@@ -51,7 +58,7 @@ async function ensureDebuggerPermission() {
 // critical: a separate attach/detach per call toggles the "debugging Chrome"
 // banner, which shifts the viewport ~35-50px and makes coordinate clicks miss.
 export async function cdp(tabId, method, params) {
-  await ensureDebuggerPermission();
+  await ensureAdvancedControl();
   await ensureAttached(tabId);
   return chrome.debugger.sendCommand({ tabId }, method, params || {});
 }
@@ -60,6 +67,13 @@ export async function cdp(tabId, method, params) {
 // Unlike injected JS .click() (isTrusted:false), this lands a real mouse event
 // that LWC/React honor and that can focus an iframe input without DOM reach-in.
 export async function clickXY({ x, y, button, clickCount }) {
+  // Guard the coords: missing/NaN x|y would dispatch a mouse event at
+  // (undefined, undefined) — CDP coerces it to (0,0) and "clicks" the top-left
+  // corner, a SILENT no-op for the intended target (and it would never focus the
+  // input the read-coords→click→fast_type playbook depends on). Fail loudly.
+  if (typeof x !== 'number' || typeof y !== 'number' || Number.isNaN(x) || Number.isNaN(y)) {
+    return { error: 'fast_click_xy: x and y must be numbers (viewport CSS pixels)' };
+  }
   const got = await getInjectableTab();
   if (got.error) return got;
   const tabId = got.tab.id;
@@ -110,13 +124,94 @@ export async function dragXY({ fromX, fromY, toX, toY, steps }) {
   return { dragged: { from: [fromX, fromY], to: [toX, toY] } };
 }
 
+// Runs in the page MAIN world: describe the focused element so we can (a) refuse
+// to type when nothing editable is focused and (b) echo back what received the
+// text. Self-contained (no closures) — chrome.scripting serializes it.
+function inspectActiveElement() {
+  const el = document.activeElement;
+  if (!el || el === document.body || el === document.documentElement) return null;
+  const tag = (el.tagName || '').toLowerCase();
+  const NON_TEXT = ['checkbox', 'radio', 'button', 'submit', 'reset', 'file', 'image', 'range', 'color', 'hidden'];
+  const editable =
+    (tag === 'input' && !NON_TEXT.includes((el.type || 'text').toLowerCase())) ||
+    tag === 'textarea' ||
+    el.isContentEditable === true;
+  let label = '';
+  try {
+    label = (el.getAttribute && (el.getAttribute('aria-label') || el.getAttribute('name') ||
+      el.getAttribute('placeholder') || el.id)) || '';
+  } catch {}
+  let value = '';
+  if (tag === 'input' || tag === 'textarea') value = el.value || '';
+  else if (el.isContentEditable) value = el.textContent || '';
+  const trim = (s) => (typeof s === 'string' && s.length > 80 ? s.slice(0, 80) + '…' : (s || ''));
+  return { tag, type: el.type || '', editable, label: trim(label), value: trim(value) };
+}
+
+// Detect macOS so keyboard chords use the platform-correct select-all modifier:
+// Cmd/Meta on macOS, Ctrl elsewhere. userAgentData.platform is the modern
+// signal; navigator.platform is the legacy fallback.
+function isMacPlatform() {
+  try {
+    const p = (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || '';
+    return /mac/i.test(p);
+  } catch { return false; }
+}
+
+// Select-all + Delete via the CDP Input domain — same trusted key path as
+// fast_key (pressKeyChord). Uses Cmd/Meta+A on macOS and Ctrl+A elsewhere (the
+// fast_key MOD_BITS map already carries meta/cmd=4), so the clear-before-type
+// select-all fires the right chord on every platform. Clears the field so a
+// follow-up insertText REPLACES instead of appending.
+async function selectAllAndDelete(tabId) {
+  const a = keyInfo('a');
+  const selectAllMod = isMacPlatform() ? MOD_BITS.meta : MOD_BITS.ctrl;
+  const aBase = { modifiers: selectAllMod, key: a.key, code: a.code, windowsVirtualKeyCode: a.keyCode, nativeVirtualKeyCode: a.keyCode };
+  await cdp(tabId, 'Input.dispatchKeyEvent', { type: 'keyDown', ...aBase });
+  await cdp(tabId, 'Input.dispatchKeyEvent', { type: 'keyUp', ...aBase });
+  const del = keyInfo('Delete');
+  const dBase = { modifiers: 0, key: del.key, code: del.code, windowsVirtualKeyCode: del.keyCode, nativeVirtualKeyCode: del.keyCode };
+  await cdp(tabId, 'Input.dispatchKeyEvent', { type: 'keyDown', ...dBase });
+  await cdp(tabId, 'Input.dispatchKeyEvent', { type: 'keyUp', ...dBase });
+}
+
 // Trusted typing into the currently-focused element via Input.insertText.
 // React accepts it because it's a real input event (unlike setting .value).
-export async function typeText({ text }) {
+//   args.text   : string to insert (required)
+//   args.clear  : when true, select-all + Delete first so the value is REPLACED,
+//                 not appended (default false → legacy append-to-focused).
+// Before inserting we verify an EDITABLE element is actually focused — a bare
+// insertText goes to document.activeElement, so with nothing useful focused the
+// text vanishes or lands in the wrong field (live: a URL appended into a Name
+// field, "FastLink relayhttps://…"). Returns which element received the text.
+export async function typeText({ text, clear } = {}) {
+  if (typeof text !== 'string') return { error: 'fast_type: text is required (string)' };
   const got = await getInjectableTab();
   if (got.error) return got;
-  await cdp(got.tab.id, 'Input.insertText', { text });
-  return { typed: text.length };
+  const tabId = got.tab.id;
+
+  const probe = await injectInTab({ world: 'MAIN', func: inspectActiveElement });
+  if (probe.error) return probe;
+  const el = probe.result;
+  if (!el || !el.editable) {
+    return { error: 'fast_type: no editable element focused — click/focus the field first', focused: el?.tag || null };
+  }
+
+  if (clear) await selectAllAndDelete(tabId);
+  await cdp(tabId, 'Input.insertText', { text });
+
+  // Echo the (post-insert) focused element so the caller can confirm the text
+  // landed where intended. Best-effort — fall back to the pre-insert probe.
+  let into = el;
+  try {
+    const after = await injectInTab({ world: 'MAIN', func: inspectActiveElement });
+    if (after.result) into = after.result;
+  } catch {}
+  return {
+    typed: text.length,
+    cleared: !!clear,
+    into: { tag: into.tag, type: into.type, label: into.label, value: into.value },
+  };
 }
 
 // CDP modifier bitmask: Alt=1, Ctrl=2, Meta/Cmd=4, Shift=8.

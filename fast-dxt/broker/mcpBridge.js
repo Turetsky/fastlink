@@ -31,7 +31,7 @@ export function broadcastToMcp(msg) {
 }
 
 // Push the current client count to every connected extension so both
-// installs' badges (yaakov/dad) reflect "0/1/2+ clients" — red/yellow/green.
+// installs' badges (primary/secondary) reflect "0/1/2+ clients" — red/yellow/green.
 function notifyExtensionOfClientCount() {
   const payload = JSON.stringify({ type: 'mcpClients', count: clients.size });
   for (const ws of state.allConnectedSockets()) {

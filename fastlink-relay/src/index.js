@@ -48,6 +48,19 @@ export class FastlinkApiHandler extends WorkerEntrypoint {
     const userId = this.ctx?.props?.userId ?? this.props?.userId;
     if (!userId) return withCors(new Response('no userId in OAuth grant', { status: 401 }), cors);
 
+    // STALE-TOKEN GUARD: an access token minted under a PREVIOUS identity mode
+    // (e.g. a 'shared'-mode "owner" token surviving a switch to 'google') still
+    // authenticates — its grant is intact — but its props.userId names a DO the
+    // re-paired extension no longer attaches to, so claude.ai would silently drive
+    // an EMPTY DO ("not connecting"). Detect that and 401 invalid_token so claude.ai
+    // re-authorizes under the current mode (landing on the same DO as the extension)
+    // instead of failing silently. New tokens carry an `idm` stamp (set in
+    // completeOAuth); legacy unstamped tokens fall back to a userId-shape check.
+    const stampedMode = this.ctx?.props?.idm ?? this.props?.idm;
+    if (!identityTokenCurrent(env, String(userId), stampedMode)) {
+      return withCors(staleTokenResponse(), cors);
+    }
+
     const stub = env.USER_RELAY.get(env.USER_RELAY.idFromName(String(userId)));
 
     // Rewrite the path to the DO's internal MCP route, preserving method + body.
@@ -61,6 +74,52 @@ export class FastlinkApiHandler extends WorkerEntrypoint {
     const res = await stub.fetch(fwd);
     return withCors(res, cors);
   }
+}
+
+// Identity-mode reader (mirrors auth.js identityMode / userRelay.#identityMode so
+// index.js stays decoupled from the auth handler module). 'magiclink' aliases 'magic'.
+function identityMode(env) {
+  const raw = env.IDENTITY_MODE || (env.UPSTREAM_OAUTH_CLIENT_ID ? 'google' : 'shared');
+  return raw === 'magiclink' ? 'magic' : raw;
+}
+
+// Is an MCP access token's identity still valid under the relay's CURRENT mode?
+//   - Tokens minted after the stamp landed carry `idm` (the mode they were minted
+//     under): authoritative — must equal the current mode.
+//   - Legacy unstamped tokens fall back to a userId-SHAPE check against the current
+//     mode (each mode produces a structurally distinct userId), which is enough to
+//     catch a cross-mode orphan like a shared-mode "owner" token under google mode.
+// Conservative by design: an UNKNOWN/custom mode is never second-guessed (returns
+// true), so this can only reject a token that is provably from a different mode.
+function identityTokenCurrent(env, userId, stampedMode) {
+  const mode = identityMode(env);
+  if (stampedMode) return stampedMode === mode;
+  switch (mode) {
+    case 'google': return /^\d{1,32}$/.test(userId);     // Google `sub` is a numeric string
+    case 'magic':  return /^[0-9a-f]{64}$/.test(userId); // sha256(email) hex
+    case 'shared': return userId === (env.SHARED_USER_ID || 'shared-user');
+    default:       return true;                          // unknown mode → don't block
+  }
+}
+
+// 401 invalid_token (RFC 6750) telling the MCP client the grant is no longer valid
+// so it re-authorizes. The JSON body is human-readable for the claude.ai UI.
+function staleTokenResponse() {
+  return new Response(
+    JSON.stringify({
+      error: 'invalid_token',
+      error_description:
+        'This FastLink connection was authorized under a previous sign-in mode and is no longer valid. Remove and re-add the FastLink connector in claude.ai to reconnect.',
+    }),
+    {
+      status: 401,
+      headers: {
+        'content-type': 'application/json',
+        'WWW-Authenticate':
+          'Bearer error="invalid_token", error_description="re-authorization required"',
+      },
+    }
+  );
 }
 
 // Build CORS headers, echoing the request Origin only if it's in the allowlist.

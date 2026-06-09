@@ -1,10 +1,17 @@
-// Per-install slots. FastLink is private to two installs (yaakov, dad), each
-// with its own port. The broker accepts both connections simultaneously and
-// tracks them as separate slots; tools route to whichever install is "active"
-// (FASTLINK_ACTIVE env var, defaults to 'yaakov').
+// Per-install slots. FastLink supports two NEUTRAL install slots that can run
+// side by side (e.g. two Chrome profiles on one machine), each bound to its own
+// broker port so they never collide. The broker accepts both connections
+// simultaneously and tracks them as separate slots; tools route to whichever
+// install is "active" (FASTLINK_ACTIVE env var, defaults to the first slot,
+// 'primary').
+//
+// EXT_PORTS is the single source of truth for the slot ids + ports. Everything
+// else (known installs, the per-port default, status output) DERIVES from its
+// keys, so the names stay neutral and in sync — no personal ids baked in.
+export const EXT_PORTS = { primary: 9876, secondary: 9877 };
 
-const KNOWN_INSTALLS = ['yaakov', 'dad'];
-const ACTIVE = (process.env.FASTLINK_ACTIVE || 'yaakov').toLowerCase();
+const KNOWN_INSTALLS = Object.keys(EXT_PORTS);
+const ACTIVE = (process.env.FASTLINK_ACTIVE || KNOWN_INSTALLS[0]).toLowerCase();
 
 const slots = new Map(); // installId -> { ws, lastConnectedAt, lastDisconnectedAt, lastPingAt, totalConnections }
 
@@ -42,9 +49,9 @@ export const state = {
   },
   // Returns whichever install's socket tool calls should route to:
   //   - If ACTIVE is connected, use it.
-  //   - Else if any other install is connected, use that one (so dad's ext
-  //     works when yaakov's is offline, and vice versa — without anyone
-  //     having to flip FASTLINK_ACTIVE).
+  //   - Else if any other install is connected, use that one (so the secondary
+  //     install works when the primary is offline, and vice versa — without
+  //     anyone having to flip FASTLINK_ACTIVE).
   //   - Else null.
   getExtensionSocket() {
     const active = slots.get(ACTIVE);

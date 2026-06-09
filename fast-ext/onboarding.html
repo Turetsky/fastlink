@@ -1,167 +1,362 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-fl-theme="dark">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Welcome to FastLink</title>
+  <!-- Brand fonts (match fastlink-site): Bricolage Grotesque + Hanken Grotesk + JetBrains Mono -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700;12..96,800&family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="src/theme.css" />
   <style>
-    :root { color-scheme: light dark; }
+    :root { color-scheme: dark; }
+
+    /* ---- Onboarding contrast policy --------------------------------------
+       The page is forced dark (#0E1219). The MAIN reading copy — step
+       descriptions, the "what you unlock" bullets, and the numbered how-to
+       lists — must be genuinely high-contrast, so it uses var(--fl-text)
+       (~#E9ECF2). Only true captions / fine-print use a still-bright grey
+       (#C3CCD9 via the bumped --fl-text-dim), NEVER the very-dim faint token
+       (#5F6B7E). And crucially, locked step cards are NO LONGER washed with
+       opacity (the old `.step.locked { opacity:.5 }` is gone) — that wash was
+       what greyed out every card's body text on the first-run page, since the
+       page loads with all four steps locked. The override is scoped to this
+       page via [data-fl-theme="dark"] specificity, so Settings is untouched. */
+    html[data-fl-theme="dark"] { --fl-text-dim: #C3CCD9; }
+
+    * { box-sizing: border-box; }
     body {
-      font: 15px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-      margin: 0; padding: 40px 24px; color: #1a1a1a; background: #fafafa;
+      font: 15px/1.55 var(--fl-font);
+      margin: 0; padding: 0 24px 56px;
+      color: var(--fl-text);
+      background:
+        radial-gradient(1100px 520px at 88% -8%, rgba(245,174,60,0.18), transparent 62%),
+        radial-gradient(820px 460px at 4% 2%, rgba(243,165,44,0.10), transparent 58%),
+        var(--fl-bg);
+      min-height: 100vh;
+      position: relative;
     }
-    .wrap { max-width: 580px; margin: 0 auto; }
-    @media (prefers-color-scheme: dark) {
-      body { color: #e8e8e8; background: #1e1e1e; }
-      .card { background: #262626 !important; border-color: #383838 !important; }
-      .step.done { background: #14301c !important; border-color: #1f7a3d !important; }
-      input { background: #1a1a1a !important; color: #e8e8e8 !important; border-color: #444 !important; }
-      .muted { color: #d8d8d8 !important; }
-      .lead { color: #ececec !important; }
-      h1, h2 { color: #ffffff !important; }
-      code { color: #e8e8e8 !important; }
-      .pill.off { background: #3a3a3a !important; color: #dcdcdc !important; }
-      .connector { background: #1a1a1a !important; border-color: #444 !important; }
-      .disclosure summary { color: #8ab4f8 !important; }
+    /* faint engineering grid, faded toward the page edges (site atmosphere) */
+    body::before {
+      content: ""; position: fixed; inset: 0; z-index: -1; pointer-events: none;
+      background-image:
+        linear-gradient(rgba(255,255,255,.025) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255,255,255,.025) 1px, transparent 1px);
+      background-size: 46px 46px;
+      -webkit-mask-image: radial-gradient(ellipse 90% 60% at 50% 0%, #000 30%, transparent 78%);
+              mask-image: radial-gradient(ellipse 90% 60% at 50% 0%, #000 30%, transparent 78%);
     }
-    h1 { font-size: 24px; margin: 0 0 6px; }
-    .lead { color: #3d3d3d; margin: 0 0 28px; font-size: 15px; }
+    /* Matches the Settings page measure so the two read as one product. */
+    .wrap { max-width: 1120px; margin: 0 auto; position: relative; }
+
+    /* ---- hero ---- */
+    .hero {
+      display: flex; align-items: center; gap: 18px;
+      padding: 50px 0 22px;
+    }
+    .hero .fl-mark { width: 52px; height: 52px; border-radius: 14px; flex: none; }
+    .hero-text { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+    .eyebrow {
+      font-family: var(--fl-mono); font-size: 11.5px; font-weight: 600;
+      letter-spacing: .18em; text-transform: uppercase; color: var(--fl-signal);
+    }
+    .hero h1 {
+      font-family: var(--fl-font-display); font-weight: 800;
+      font-size: 33px; line-height: 1.04; margin: 1px 0 0; letter-spacing: -0.02em;
+    }
+    .fl-wordmark { font-weight: 800; }
+    .lead { color: var(--fl-text); margin: 9px 0 0; font-size: 15.5px; max-width: 720px; }
+    .hero-rule {
+      height: 1px; margin: 0 0 26px;
+      background: linear-gradient(90deg, var(--fl-border) 0%, var(--fl-border) 55%, transparent 100%);
+    }
+
+    /* ---- steps layout ----------------------------------------------------
+       The steps are a numbered 1·2·3·4 SEQUENCE, so they stack as a single
+       clean vertical column (DOM order = reading order). The column is capped
+       narrower than the page and centered, so a vertical step list reads as an
+       intentional ordered flow rather than a full-bleed wall. */
+    .steps {
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+      max-width: 800px;
+      margin: 0 auto;
+    }
+
     .card {
-      background: #fff; border: 1px solid #e2e2e2; border-radius: 12px;
-      padding: 22px 24px; margin-bottom: 18px;
+      background: var(--fl-glass-card); border: 1px solid var(--fl-border);
+      border-radius: var(--fl-r-lg); box-shadow: var(--fl-shadow);
+      -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
+      padding: 24px 26px; display: flex; flex-direction: column;
+      transition: border-color .15s ease, box-shadow .15s ease;
     }
-    .step.done { background: #e9f8ee; border-color: #b6e6c5; }
-    .step-head { display: flex; align-items: center; gap: 10px; margin: 0 0 6px; }
+    .card:hover { border-color: var(--fl-border-strong); }
+    .step.done {
+      border-color: color-mix(in srgb, var(--fl-ok) 55%, var(--fl-border));
+      background: color-mix(in srgb, var(--fl-ok-bg) 55%, var(--fl-glass-card));
+    }
+    /* `.locked` no longer dims content — readability comes first. The
+       not-yet-active cue lives entirely in the muted number badge + kicker. */
+
+    .step-head { display: flex; align-items: flex-start; gap: 14px; margin: 0 0 10px; }
     .num {
-      flex: 0 0 26px; width: 26px; height: 26px; border-radius: 50%;
-      display: grid; place-items: center; font-weight: 700; font-size: 13px;
-      background: #2b6cee; color: #fff;
+      flex: 0 0 30px; width: 30px; height: 30px; border-radius: 50%;
+      display: grid; place-items: center; font-weight: 700; font-size: 14px;
+      background: var(--fl-signal); color: var(--fl-on-accent);
+      box-shadow: 0 0 0 4px var(--fl-signal-soft);
     }
-    .step.done .num { background: #1a7f37; }
-    .step.locked { opacity: .55; }
-    .step.locked .num { background: #b8b8b8; }
-    h2 { font-size: 16px; margin: 0; }
+    .step.locked .num { background: var(--fl-surface-2); color: var(--fl-text-dim); box-shadow: none; }
+    .step.done .num { background: var(--fl-ok); color: #04210F; box-shadow: 0 0 0 4px var(--fl-ok-bg); }
+    .step-titles { display: flex; flex-direction: column; gap: 3px; min-width: 0; padding-top: 1px; }
+    .kicker {
+      font-family: var(--fl-mono); font-size: 11px; font-weight: 600;
+      letter-spacing: .15em; text-transform: uppercase; color: var(--fl-signal);
+    }
+    .step.locked .kicker { color: var(--fl-text-dim); }
+    .step.done .kicker { color: var(--fl-ok-text); }
+    h2 {
+      font-family: var(--fl-font-display); font-weight: 700; font-size: 18px;
+      line-height: 1.25; margin: 0; display: flex; align-items: center; gap: 9px; flex-wrap: wrap;
+    }
+
+    /* ---- body copy: PRIMARY reading text is bright (var(--fl-text)) ---- */
     p { margin: 8px 0; }
-    .muted { color: #555; font-size: 13.5px; }
+    .desc { color: var(--fl-text); font-size: 14.5px; margin: 0; }
+    .hint { color: var(--fl-text-dim); font-size: 13px; }
+    .fine { color: var(--fl-text-dim); font-size: 13px; line-height: 1.5; }
+
+    /* ---- pills / status ---- */
+    .pill { display: inline-block; padding: 3px 11px; border-radius: var(--fl-r-pill);
+            font-size: 12px; font-weight: 700; letter-spacing: .01em; }
+    .pill.ok   { background: var(--fl-ok-bg);   color: var(--fl-ok-text); }
+    .pill.warn { background: var(--fl-warn-bg); color: var(--fl-warn-text); }
+    .pill.off  { background: var(--fl-surface-2); color: var(--fl-text-dim); }
+    .pill.rec  { background: var(--fl-signal-soft); color: var(--fl-signal); }
+
+    /* ---- buttons ---- */
     button {
-      font: inherit; font-weight: 600; padding: 11px 18px; border-radius: 8px;
+      font: inherit; font-weight: 600; padding: 11px 18px; border-radius: var(--fl-r-sm);
       border: 1px solid transparent; cursor: pointer;
+      transition: background .12s ease, border-color .12s ease, filter .12s ease;
     }
-    button.primary { background: #2b6cee; color: #fff; font-size: 15px; }
-    button.primary:hover { background: #1f5bd6; }
-    button.ghost { background: transparent; border-color: #ccc; color: inherit; }
-    button.small { padding: 7px 12px; font-size: 13px; }
+    button.primary {
+      background: linear-gradient(180deg, var(--fl-signal), #E0941F);
+      color: var(--fl-on-accent); font-size: 15px; box-shadow: var(--fl-glow);
+    }
+    button.primary:hover { filter: brightness(1.05); box-shadow: var(--fl-glow-strong); }
+    button.ghost { background: var(--fl-surface); border-color: var(--fl-border-strong); color: var(--fl-text); }
+    button.ghost:hover { background: var(--fl-surface-2); }
+    button.small { padding: 8px 13px; font-size: 13px; }
     button:disabled { opacity: .5; cursor: default; }
-    .pill { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; margin-left: 6px; }
-    .pill.ok   { background: #e3f6e6; color: #1a7f37; }
-    .pill.warn { background: #fdeccd; color: #9a6700; }
-    .pill.off  { background: #ececec; color: #555; }
+    a.linkbtn {
+      display: inline-flex; align-items: center; gap: 5px;
+      font-weight: 600; font-size: 14px; color: var(--fl-signal); text-decoration: none;
+    }
+    a.linkbtn:hover { text-decoration: underline; }
+
     .row { display: flex; gap: 10px; align-items: center; margin-top: 14px; flex-wrap: wrap; }
+
+    /* ---- connector box ---- */
     .connector {
-      display: flex; align-items: center; gap: 10px; margin: 12px 0;
-      background: #f4f6fb; border: 1px solid #dde3f0; border-radius: 8px; padding: 10px 12px;
+      display: flex; align-items: center; gap: 10px; margin: 14px 0 2px;
+      background: var(--fl-surface-2); border: 1px solid var(--fl-border);
+      border-radius: var(--fl-r); padding: 11px 13px;
     }
     .connector code {
-      flex: 1; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 13.5px;
-      word-break: break-all;
+      flex: 1; font-family: var(--fl-mono); font-size: 13.5px; word-break: break-all;
+      color: var(--fl-text); background: none; padding: 0;
     }
-    ol.howto { margin: 10px 0 0; padding-left: 20px; }
-    ol.howto li { margin: 4px 0; }
-    label { display: block; font-weight: 600; margin: 12px 0 4px; font-size: 13.5px; }
+
+    /* ---- lists: bright, readable, amber/neutral markers ---- */
+    ul.unlocks { margin: 12px 0 14px; padding-left: 19px; color: var(--fl-text); font-size: 14px; }
+    ul.unlocks li { margin: 6px 0; line-height: 1.5; }
+    ul.unlocks li::marker { color: var(--fl-signal); }
+    ul.unlocks b { color: var(--fl-text); font-weight: 700; }
+    ol.howto { margin: 13px 0 0; padding-left: 21px; color: var(--fl-text); font-size: 14px; }
+    ol.howto li { margin: 6px 0; line-height: 1.5; }
+    ol.howto li::marker { color: var(--fl-text-dim); font-weight: 600; }
+    ol.howto strong { color: var(--fl-text); }
+
+    label { display: block; font-weight: 600; margin: 14px 0 5px; font-size: 13px; color: var(--fl-text); }
     input {
-      width: 100%; box-sizing: border-box; padding: 9px 11px; font-size: 14px;
-      border: 1px solid #ccc; border-radius: 7px; background: #fff;
+      width: 100%; padding: 11px 13px; font-size: 14px;
+      border: 1px solid var(--fl-border-strong); border-radius: var(--fl-r-sm);
+      background: var(--fl-surface); color: var(--fl-text);
     }
-    input#code { letter-spacing: .16em; font-family: ui-monospace, "SF Mono", Menlo, monospace; text-transform: uppercase; }
-    .msg { margin-top: 14px; padding: 10px 12px; border-radius: 7px; font-size: 13.5px; display: none; }
-    .msg.err  { display: block; background: #fde8e8; color: #b42318; }
-    .msg.ok   { display: block; background: #e3f6e6; color: #1a7f37; }
-    .msg.info { display: block; background: #eaf1fe; color: #1f5bd6; }
-    .disclosure { margin-top: 6px; }
-    .disclosure summary { cursor: pointer; color: #2b6cee; font-size: 13.5px; font-weight: 600; }
+    input:focus { outline: 2px solid color-mix(in srgb, var(--fl-signal) 55%, transparent); outline-offset: 1px; border-color: var(--fl-signal); }
+    input#code { letter-spacing: .16em; font-family: var(--fl-mono); text-transform: uppercase; }
+    code { font-family: var(--fl-mono); background: var(--fl-surface-2); padding: 1px 6px; border-radius: 4px; font-size: 12.5px; color: var(--fl-text); }
+
+    .msg { margin-top: 14px; padding: 10px 12px; border-radius: var(--fl-r-sm); font-size: 13.5px; display: none; }
+    .msg.err  { display: block; background: var(--fl-err-bg);  color: var(--fl-err-text); }
+    .msg.ok   { display: block; background: var(--fl-ok-bg);   color: var(--fl-ok-text); }
+    .msg.info { display: block; background: var(--fl-read-bg); color: var(--fl-read-text); }
+
+    .disclosure { margin-top: 16px; border-top: 1px solid var(--fl-border); padding-top: 14px; }
+    .disclosure summary { cursor: pointer; color: var(--fl-signal); font-size: 13.5px; font-weight: 600; }
     .disclosure[open] summary { margin-bottom: 8px; }
+    .advanced { margin-top: 10px; }
+
+    /* compact "vision enabled" saved view */
+    .saved-row {
+      display: flex; align-items: center; gap: 10px; margin-top: 12px;
+      padding: 11px 13px; border-radius: var(--fl-r);
+      background: var(--fl-ok-bg); border: 1px solid color-mix(in srgb, var(--fl-ok) 45%, transparent);
+      color: var(--fl-ok-text); font-weight: 600;
+    }
+    .saved-row .chk { font-size: 15px; }
+    .saved-row button { margin-left: auto; }
+
+    .foot {
+      text-align: center; color: var(--fl-text-dim); font-size: 13.5px;
+      line-height: 1.55; margin: 34px auto 0; max-width: 680px;
+    }
   </style>
 </head>
 <body>
   <div class="wrap">
-    <h1>Welcome to FastLink</h1>
-    <p class="lead">FastLink lets Claude drive your own Chrome tab — read the page, click, fill forms, capture console &amp; network. Two quick steps to connect.</p>
-
-    <!-- STEP 1 — Sign in & connect -->
-    <div class="card step locked" id="step1">
-      <div class="step-head">
-        <span class="num" id="num1">1</span>
-        <h2>Sign in &amp; connect this browser <span id="conn-pill" class="pill off">Not connected</span></h2>
+    <div class="hero">
+      <span class="fl-mark" aria-hidden="true">
+        <svg viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <defs><linearGradient id="flmO" x1="14" y1="8" x2="50" y2="56" gradientUnits="userSpaceOnUse">
+            <stop offset="0" stop-color="#F5AE3C"/><stop offset="1" stop-color="#F3A52C"/></linearGradient></defs>
+          <rect x="3" y="3" width="58" height="58" rx="16" fill="#232D3F"/>
+          <rect x="3.75" y="3.75" width="56.5" height="56.5" rx="15.25" fill="none" stroke="url(#flmO)" stroke-width="1.5" stroke-opacity="0.55"/>
+          <path d="M37 9 L19 35 H30 L27 55 L46 27 H34 L37 9 Z" fill="url(#flmO)"/>
+          <circle cx="46" cy="27" r="3.2" fill="#232D3F" stroke="url(#flmO)" stroke-width="2"/>
+          <circle cx="19" cy="35" r="3.2" fill="#232D3F" stroke="url(#flmO)" stroke-width="2"/>
+        </svg>
+      </span>
+      <div class="hero-text">
+        <span class="eyebrow">Get started</span>
+        <h1>Welcome to <span class="fl-wordmark">Fast<span class="lk">Link</span></span></h1>
+        <p class="lead">FastLink lets Claude drive your own Chrome tab — read the page, click, fill forms, capture console &amp; network. A couple of quick steps to connect.</p>
       </div>
-      <p class="muted" id="step1-detail">Sign in to the FastLink relay. Your browser pairs automatically — no codes to copy.</p>
-      <div class="row">
-        <button id="signin-btn" class="primary">Sign in &amp; connect</button>
-        <span class="muted" id="signin-hint"></span>
-      </div>
-      <div id="msg" class="msg"></div>
+    </div>
+    <div class="hero-rule"></div>
 
-      <details class="disclosure" id="manual-disclosure">
-        <summary>Have a pairing code instead?</summary>
-        <label for="relayBase">Relay URL</label>
-        <input id="relayBase" type="url" placeholder="https://relay.ytx.app" value="https://relay.ytx.app" autocomplete="off" spellcheck="false" />
-        <label for="code">Pairing code</label>
-        <input id="code" type="text" placeholder="K7Q2-9XBD" autocomplete="off" spellcheck="false" maxlength="20" />
-        <div class="row">
-          <button id="pair-btn" class="ghost small">Pair with code</button>
+    <div class="steps">
+      <!-- STEP 1 — Sign in & connect -->
+      <div class="card step locked" id="step1">
+        <div class="step-head">
+          <span class="num" id="num1">1</span>
+          <div class="step-titles">
+            <span class="kicker">Connection</span>
+            <h2>Connect this browser <span id="conn-pill" class="pill off">Not connected</span></h2>
+          </div>
         </div>
-      </details>
+        <p class="desc" id="step1-detail">Click <strong>Sign in &amp; connect</strong> — a relay sign-in window opens (sign in with Google). This browser then pairs automatically and saves a device token; there are no codes to copy. You only do this once per browser.</p>
+        <div class="row">
+          <button id="signin-btn" class="primary">Sign in &amp; connect</button>
+          <span class="hint" id="signin-hint"></span>
+        </div>
+        <div id="msg" class="msg"></div>
+
+        <details class="disclosure" id="manual-disclosure">
+          <summary>Have a pairing code instead?</summary>
+          <p class="fine">Only needed if the one-click <strong>Sign in &amp; connect</strong> above didn't work, or to pair a second Chrome profile.</p>
+          <div class="row">
+            <a id="gen-code" class="linkbtn" href="https://relay.ytx.app/pair/new" target="_blank" rel="noopener">Generate a code →</a>
+          </div>
+          <p class="fine">Sign in there and it'll show you a one-time code (expires in 10 minutes) to paste below.</p>
+          <label for="code">Pairing code</label>
+          <input id="code" type="text" placeholder="XXXX-XXXX" autocomplete="off" spellcheck="false" maxlength="20" />
+          <div class="row">
+            <button id="pair-btn" class="ghost small">Pair with code</button>
+          </div>
+          <details class="advanced">
+            <summary class="fine" style="cursor:pointer;">Advanced — relay URL</summary>
+            <label for="relayBase">Relay URL</label>
+            <input id="relayBase" type="url" placeholder="https://relay.ytx.app" value="https://relay.ytx.app" autocomplete="off" spellcheck="false" />
+          </details>
+        </details>
+      </div>
+
+      <!-- STEP 2 — Enable vision & speed (recommended) -->
+      <div class="card step locked" id="step2">
+        <div class="step-head">
+          <span class="num" id="num2">2</span>
+          <div class="step-titles">
+            <span class="kicker">Vision &amp; speed</span>
+            <h2>Enable vision &amp; speed <span id="vision-pill" class="pill rec">Recommended</span></h2>
+          </div>
+        </div>
+        <p class="desc">Add your free Google Gemini key to unlock FastLink's fastest, most capable tiers:</p>
+        <ul class="unlocks">
+          <li><b>Vision tier</b> — drive canvas, iframe, and other non-DOM UIs; screenshot-based locating &amp; clicking; one-shot vision form-fill.</li>
+          <li><b>Scout</b> — instant page pre-reads that let Claude plan in one pass, so tasks run much faster.</li>
+        </ul>
+
+        <!-- field view (no key yet) -->
+        <div id="gemini-field">
+          <label for="geminiKey">Gemini API key</label>
+          <input id="geminiKey" type="password" placeholder="AIza…" autocomplete="off" spellcheck="false" />
+          <div class="row">
+            <button id="gemini-btn" class="ghost small">Save key</button>
+            <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener" class="linkbtn">Get a free key →</a>
+            <span class="hint" id="gemini-hint"></span>
+          </div>
+          <ol class="howto">
+            <li>Open <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener"><strong>Google AI Studio</strong></a>.</li>
+            <li>Sign in and click <strong>Create API key</strong> (any project works).</li>
+            <li>Copy the key (<code>AIza…</code>), paste it above, and click <strong>Save key</strong>.</li>
+          </ol>
+          <p class="fine">No key? FastLink still works in DOM-only mode — but you'll want this for canvas/iframe sites and the speed boost.</p>
+        </div>
+
+        <!-- saved view (key on file) -->
+        <div id="gemini-saved" class="saved-row" style="display:none;">
+          <span class="chk">✓</span>
+          <span>Vision enabled — key saved</span>
+          <button id="gemini-change" class="ghost small">Change key</button>
+        </div>
+        <div id="gemini-msg" class="msg"></div>
+      </div>
+
+      <!-- STEP 3 — Add to claude.ai -->
+      <div class="card step locked" id="step3">
+        <div class="step-head">
+          <span class="num" id="num3">3</span>
+          <div class="step-titles">
+            <span class="kicker">claude.ai connector</span>
+            <h2>Add FastLink to claude.ai</h2>
+          </div>
+        </div>
+        <p class="desc">Add this URL as a custom connector in claude.ai, then sign in with the <strong>same account</strong> you paired with above. Claude can then drive this browser.</p>
+        <div class="connector">
+          <code id="connector-url">https://relay.ytx.app/mcp</code>
+          <button id="copy-btn" class="ghost small">Copy</button>
+        </div>
+        <ol class="howto">
+          <li>In claude.ai, open <strong>Settings → Connectors → Add custom connector</strong>.</li>
+          <li>Paste the URL above and save, then click <strong>Connect</strong> and sign in with the <strong>same account</strong>.</li>
+          <li>Start a chat and ask Claude to use FastLink on your active tab.</li>
+        </ol>
+      </div>
+
+      <!-- STEP 4 — Watch Claude work -->
+      <div class="card step locked span2" id="step4">
+        <div class="step-head">
+          <span class="num" id="num4">4</span>
+          <div class="step-titles">
+            <span class="kicker">Stay in the loop</span>
+            <h2>Watch Claude work</h2>
+          </div>
+        </div>
+        <p class="desc">FastLink <strong>pins</strong> the tab Claude is driving (its <em>target tab</em>), so Claude keeps driving that tab even when you switch away — you never lose your place in the chat. You've got several ways to see exactly what's happening:</p>
+        <ol class="howto">
+          <li><strong>On the driven tab</strong> — a <strong>“Claude is driving this tab”</strong> panel (top-right) annotates each click, type, and read in real time.</li>
+          <li><strong>The FastLink side panel</strong> — open it from Chrome's side-panel button to mirror Claude's live transcript and current action. It stays visible across <strong>all</strong> tabs, so it's the best way to watch from anywhere.</li>
+          <li><strong>Floating transcript</strong> — a compact transcript overlay can also follow you onto whatever tab you're currently viewing.</li>
+          <li><strong>Toolbar badge</strong> — at a glance: a <strong>spinner</strong> means working, <strong>“!”</strong> means possibly stuck, and empty means idle. The popup shows which tab is being driven plus the last action.</li>
+        </ol>
+        <p class="fine">Tip: keeping claude.ai in one window and the driven tab in another side-by-side still works nicely — but with the side panel it's now optional, since you can watch from any tab.</p>
+      </div>
     </div>
 
-    <!-- STEP 2 — Enable vision (optional, BYO Gemini key) -->
-    <div class="card step locked" id="step2">
-      <div class="step-head">
-        <span class="num" id="num2">2</span>
-        <h2>Enable vision <span class="pill off" style="background:#eef;color:#55a;">optional</span></h2>
-      </div>
-      <p class="muted"><strong>FastLink works fully without this — it reads and drives the page from the DOM.</strong> Add your own Google Gemini API key only to light up the optional vision / scout speed tier (screenshot-based locating and page pre-reads). Without a key, those specific tools return <code>{disabled:true}</code> and everything else works normally.</p>
-      <label for="geminiKey">Gemini API key (optional)</label>
-      <input id="geminiKey" type="password" placeholder="AIza…" autocomplete="off" spellcheck="false" />
-      <div class="row">
-        <button id="gemini-btn" class="ghost small">Save key</button>
-        <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener" class="muted">Get a free key</a>
-        <span class="muted" id="gemini-hint"></span>
-      </div>
-      <div id="gemini-msg" class="msg"></div>
-    </div>
-
-    <!-- STEP 3 — Add to claude.ai -->
-    <div class="card step locked" id="step3">
-      <div class="step-head">
-        <span class="num" id="num3">3</span>
-        <h2>Add FastLink to claude.ai</h2>
-      </div>
-      <p class="muted">Add this URL as a custom connector in claude.ai, then sign in with the same account. Claude can then drive this browser.</p>
-      <div class="connector">
-        <code id="connector-url">https://relay.ytx.app/mcp</code>
-        <button id="copy-btn" class="ghost small">Copy</button>
-      </div>
-      <ol class="howto">
-        <li>In claude.ai, open <strong>Settings → Connectors → Add custom connector</strong>.</li>
-        <li>Paste the URL above and save, then <strong>Connect</strong> and sign in with the same account.</li>
-        <li>Start a chat and ask Claude to use FastLink on your active tab.</li>
-      </ol>
-    </div>
-
-    <!-- STEP 4 — Watch Claude work -->
-    <div class="card step locked" id="step4">
-      <div class="step-head">
-        <span class="num" id="num4">4</span>
-        <h2>Watch Claude work</h2>
-      </div>
-      <p class="muted">FastLink <strong>pins</strong> the tab Claude is working on, so it keeps driving that tab even when it isn't focused — you never lose your place in the chat.</p>
-      <ol class="howto">
-        <li>Keep <strong>claude.ai in one window</strong> and put the <strong>tab you want driven in a second window, side-by-side</strong>.</li>
-        <li>Ask Claude to act on that tab. A <strong>“Claude is driving this tab”</strong> panel appears top-right on it and annotates each click, type, and read in real time.</li>
-        <li>Because the tab is pinned, Claude drives it in the background without stealing your focus. The extension toolbar icon and popup also show what's being driven.</li>
-      </ol>
-    </div>
-
-    <p class="muted">You can reopen this page anytime from the extension's options. The local broker (Claude Code / Desktop) keeps working alongside the cloud relay.</p>
+    <p class="foot">Reopen this page anytime from the extension's options. The local broker (Claude Code / Desktop) keeps working alongside the cloud relay.</p>
   </div>
 
   <script type="module" src="onboarding.js"></script>

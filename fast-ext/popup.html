@@ -1,77 +1,200 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-fl-theme="dark">
 <head>
   <meta charset="utf-8" />
+  <!-- Brand fonts (match fastlink-site): Bricolage Grotesque + Hanken Grotesk + JetBrains Mono -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700;12..96,800&family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="src/theme.css" />
   <style>
-    :root { color-scheme: light dark; }
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
     body {
-      font: 13px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-      margin: 0; padding: 14px; width: 260px;
-      color: #1a1a1a; background: #fafafa;
+      font: 13px/1.4 var(--fl-font);
+      margin: 0; padding: 10px; width: 300px;
+      color: var(--fl-text);
+      background:
+        radial-gradient(420px 240px at 100% -10%, rgba(245,174,60,0.16), transparent 64%),
+        radial-gradient(360px 220px at 0% 0%, rgba(243,165,44,0.08), transparent 60%),
+        var(--fl-bg);
     }
-    @media (prefers-color-scheme: dark) {
-      body { color: #e8e8e8; background: #1e1e1e; }
-      button.ghost { border-color: #444 !important; }
+
+    /* ---- header ---- */
+    .top { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+    .fl-wordmark { font-size: 15px; }
+    .ver { margin-left: auto; font-size: 12px; font-weight: 600; line-height: 1;
+           color: var(--fl-text-dim); font-variant-numeric: tabular-nums;
+           padding: 2px 7px; border-radius: var(--fl-r-pill);
+           background: var(--fl-surface-2); border: 1px solid var(--fl-border); }
+
+    /* ---- card surface ---- */
+    .card {
+      background: var(--fl-glass-card); border: 1px solid var(--fl-border);
+      border-radius: var(--fl-r-lg); box-shadow: var(--fl-shadow);
+      -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
+      padding: 2px 12px; margin-bottom: 8px;
     }
-    h1 { font-size: 14px; margin: 0 0 8px; }
-    p { margin: 6px 0; }
-    .muted { color: #777; }
-    .pill { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 11px; font-weight: 700; }
-    .pill.ok   { background: #e3f6e6; color: #1a7f37; }
-    .pill.warn { background: #fdeccd; color: #9a6700; }
-    .pill.off  { background: #ececec; color: #555; }
-    .row { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
-    button {
-      font: inherit; font-weight: 600; padding: 8px 12px; border-radius: 7px;
-      border: 1px solid transparent; cursor: pointer; width: 100%;
+    .muted { color: var(--fl-text-dim); }
+
+    /* ---- connection rows ---- */
+    .trow { padding: 7px 0; border-top: 1px solid var(--fl-border); }
+    .trow:first-child { border-top: 0; }
+    .trow-main { display: flex; align-items: center; gap: 8px; }
+    .trow-title { font-weight: 600; }
+    .trow-sub { color: var(--fl-text-dim); font-size: 12px; margin-top: 2px; padding-left: 16px; }
+    .pill {
+      margin-left: auto; display: inline-block; padding: 2px 9px;
+      border-radius: var(--fl-r-pill); font-size: 11px; font-weight: 700; letter-spacing: 0.01em;
     }
-    button.primary { background: #2b6cee; color: #fff; }
-    button.ghost { background: transparent; border: 1px solid #ccc; color: inherit; }
-    .consent {
-      margin-top: 12px; padding: 10px 12px; border-radius: 8px;
-      background: #fff7e6; border: 1px solid #f0d8a8;
+    .pill.ok   { background: var(--fl-ok-bg);   color: var(--fl-ok-text); }
+    .pill.warn { background: var(--fl-warn-bg); color: var(--fl-warn-text); }
+    .pill.off  { background: var(--fl-err-bg);  color: var(--fl-err-text); }
+
+    /* ---- live activity / driving lines (stand-alone cards) ---- */
+    .panel {
+      border: 1px solid var(--fl-border); border-radius: var(--fl-r);
+      padding: 7px 10px; margin-bottom: 8px; font-size: 12px;
     }
-    @media (prefers-color-scheme: dark) {
-      .consent { background: #2a2418 !important; border-color: #5c4a1f !important; }
-    }
-    .consent h2 { font-size: 12px; margin: 0 0 4px; text-transform: uppercase; letter-spacing: .04em; color: #9a6700; }
-    .consent .origin { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px; word-break: break-all; margin: 2px 0 8px; }
-    .consent .btns { display: flex; gap: 6px; }
-    .consent .btns button { padding: 6px 8px; font-size: 12px; }
-    .consent button.allow { background: #1a7f37; color: #fff; }
-    .consent button.read  { background: #2b6cee; color: #fff; }
-    .consent button.block { background: transparent; border: 1px solid #c44; color: #c44; }
-    .consent .cmsg { font-size: 12px; margin: 6px 0 0; }
+    .activity .head { font-weight: 700; }
+    .activity .sub  { color: var(--fl-text-dim); margin-top: 2px; }
+    .activity.running { background: var(--fl-signal-soft); border-color: color-mix(in srgb, var(--fl-signal) 35%, transparent); }
+    .activity.running .head { color: var(--fl-signal); }
+    .activity.stuck   { background: var(--fl-stuck-bg); border-color: color-mix(in srgb, var(--fl-stuck) 45%, transparent); }
+    .activity.stuck   .head { color: var(--fl-stuck-text); }
+    .activity.idle    { background: var(--fl-surface-2); border-color: var(--fl-border); }
+    .activity.idle    .head { color: var(--fl-text-dim); font-weight: 600; }
+
     .driving {
-      margin-top: 10px; padding: 7px 10px; border-radius: 7px; font-size: 12px; font-weight: 600;
-      background: rgba(92,200,255,0.14); color: #1f6fb0; border: 1px solid rgba(92,200,255,0.4);
+      font-weight: 600; background: var(--fl-signal-soft); color: var(--fl-signal);
+      border-color: color-mix(in srgb, var(--fl-signal) 40%, transparent);
       white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }
     .driving.paused {
-      background: rgba(255,176,32,0.16); color: #9a6700; border-color: rgba(255,176,32,0.5);
+      background: var(--fl-warn-bg); color: var(--fl-warn-text);
+      border-color: color-mix(in srgb, var(--fl-warn) 50%, transparent);
       white-space: normal;
     }
-    @media (prefers-color-scheme: dark) {
-      .driving { color: #bcd4ff !important; }
-      .driving.paused { color: #f0c674 !important; }
+
+    /* ---- site permission (consent) ---- */
+    .consent {
+      border: 1px solid var(--fl-border); border-radius: var(--fl-r);
+      padding: 8px 10px; margin-bottom: 8px; background: var(--fl-surface);
     }
-    button.stop { background: #c0392b; color: #fff; border-color: transparent; }
-    button.resume { background: #1a7f37; color: #fff; border-color: transparent; }
+    .consent.pending { background: var(--fl-warn-bg); border-color: color-mix(in srgb, var(--fl-warn) 55%, transparent); }
+    .consent h2 {
+      font-family: var(--fl-mono);
+      font-size: 11px; margin: 0 0 4px; text-transform: uppercase;
+      letter-spacing: .05em; color: var(--fl-text-dim);
+    }
+    .consent.pending h2 { color: var(--fl-warn-text); }
+    .consent .origin { font-family: var(--fl-mono); font-size: 12px; word-break: break-all; margin: 2px 0 8px; color: var(--fl-text); }
+    /* one-line plain-English explainer (new; doesn't touch existing selectors) */
+    .consent .explain { color: var(--fl-text-dim); font-size: 11px; line-height: 1.4; margin: 6px 0 0; }
+    .consent.pending .explain { color: var(--fl-warn-text); }
+    .consent .btns { display: flex; gap: 6px; }
+    .consent .btns button { padding: 6px 8px; font-size: 12px; border-radius: var(--fl-r-sm); }
+    .consent button.allow { background: var(--fl-ok); color: #fff; }
+    .consent button.read  { background: var(--fl-primary); color: var(--fl-on-primary); }
+    .consent button.block { background: transparent; border: 1px solid var(--fl-err); color: var(--fl-err); }
+    .consent .cmsg { font-size: 12px; margin: 7px 0 0; }
+    /* compact saved-status row */
+    .consent-line { display: flex; align-items: center; gap: 8px; }
+    .consent-line .site { font-family: var(--fl-mono); font-size: 12px; color: var(--fl-text);
+                          white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .consent-line .state { font-weight: 600; }
+    .consent-line .state.allow { color: var(--fl-ok-text); }
+    .consent-line .state.readonly { color: var(--fl-read-text); }
+    .consent-line .state.block { color: var(--fl-err-text); }
+    .consent-line .state.none  { color: var(--fl-text-faint); font-weight: 500; }
+    .linklike {
+      margin-left: auto; background: none; border: 0; padding: 0; width: auto;
+      color: var(--fl-signal); font-weight: 600; font-size: 12px; cursor: pointer;
+    }
+    .linklike:hover { text-decoration: underline; }
+
+    /* ---- buttons ---- */
+    .row { display: flex; flex-direction: column; gap: 6px; }
+    .row.split { flex-direction: row; }
+    .row.split button { flex: 1; }
+    button {
+      font: inherit; font-weight: 600; padding: 8px 12px; border-radius: var(--fl-r-sm);
+      border: 1px solid transparent; cursor: pointer; width: 100%;
+      transition: background .12s ease, border-color .12s ease;
+    }
+    button.primary {
+      background: linear-gradient(180deg, var(--fl-signal), #E0941F);
+      color: var(--fl-on-accent); box-shadow: var(--fl-glow);
+    }
+    button.primary:hover { filter: brightness(1.05); box-shadow: var(--fl-glow-strong); }
+    button.ghost { background: var(--fl-surface); border: 1px solid var(--fl-border-strong); color: var(--fl-text); }
+    button.ghost:hover { background: var(--fl-surface-2); }
+    button.stop   { background: var(--fl-err); color: #fff; }
+    button.stop:hover { filter: brightness(0.94); }
+    button.resume { background: var(--fl-ok); color: #fff; }
+    button.resume:hover { filter: brightness(0.94); }
+
+    /* ---- notify toggle ---- */
+    .notify-row {
+      display: flex; align-items: center; gap: 8px; margin-top: 8px;
+      font-size: 12px; color: var(--fl-text-dim); cursor: pointer;
+    }
+    .notify-row input { accent-color: var(--fl-signal); }
+
+    /* ---- side panel link (footer) ---- */
+    .sidepanel-row { margin-top: 8px; text-align: center; }
+    button.sidepanel-link {
+      background: none; border: 0; padding: 2px; width: auto;
+      color: var(--fl-signal); font-weight: 600; font-size: 12px; cursor: pointer;
+    }
+    button.sidepanel-link:hover { text-decoration: underline; }
   </style>
 </head>
 <body>
-  <h1>FastLink</h1>
-  <div id="rows"><p class="muted">Loading…</p></div>
-  <div id="driving" class="driving" style="display:none;"></div>
+  <div class="top">
+    <span class="fl-brand">
+      <span class="fl-mark" aria-hidden="true">
+        <svg viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <defs><linearGradient id="flmP" x1="14" y1="8" x2="50" y2="56" gradientUnits="userSpaceOnUse">
+            <stop offset="0" stop-color="#F5AE3C"/><stop offset="1" stop-color="#F3A52C"/></linearGradient></defs>
+          <rect x="3" y="3" width="58" height="58" rx="16" fill="#232D3F"/>
+          <path d="M37 9 L19 35 H30 L27 55 L46 27 H34 L37 9 Z" fill="url(#flmP)"/>
+          <circle cx="46" cy="27" r="3.2" fill="#232D3F" stroke="url(#flmP)" stroke-width="2"/>
+          <circle cx="19" cy="35" r="3.2" fill="#232D3F" stroke="url(#flmP)" stroke-width="2"/>
+        </svg>
+      </span>
+      <span class="fl-wordmark">Fast<span class="lk">Link</span></span>
+    </span>
+    <span id="version" class="ver"></span>
+  </div>
+
+  <div class="card">
+    <div id="rows"><p class="muted" style="padding:9px 0;">Loading…</p></div>
+  </div>
+
+  <div id="activity" class="panel activity" style="display:none;"></div>
+  <div id="driving" class="panel driving" style="display:none;"></div>
   <div id="consent" class="consent" style="display:none;"></div>
-  <div class="row" id="controls" style="display:none;">
+
+  <div class="row" id="controls" style="display:none; margin-bottom:8px;">
     <button id="pause-btn" class="stop">⏸ Stop driving</button>
     <button id="disconnect-btn" class="ghost" style="display:none;">Disconnect relay</button>
   </div>
-  <div class="row">
-    <button id="open" class="primary">Pairing settings</button>
-    <button id="reload" class="ghost">Reload extension</button>
+
+  <div class="row split">
+    <button id="open" class="primary">Settings</button>
+    <button id="reload" class="ghost">Reload</button>
   </div>
+
+  <label class="notify-row">
+    <input type="checkbox" id="notify-toggle" />
+    Alert me when Claude finishes or stalls
+  </label>
+
+  <div class="sidepanel-row">
+    <button id="open-sidepanel" class="sidepanel-link">Transcript ▸ Open side panel</button>
+  </div>
+
   <script src="popup.js"></script>
 </body>
 </html>

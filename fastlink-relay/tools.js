@@ -121,14 +121,14 @@ export const TOOLS = [
   },
   {
     name: 'fast_click',
-    description: 'Click an element matching text/label/aria-label/placeholder. Matches are auto-ranked so visible-content matches beat aria-label matches, which beat tooltip-only (title) matches — the right button usually wins on its own. When that\'s not enough, narrow with role (e.g. "menuitem", "option", "button") or tag (e.g. "mat-option", "a"), or use index to pick the N-th match (0-based). On a miss, the response includes diagnostics explaining why (hidden, behind aria-hidden, non-interactive, off-screen, cross-origin iframe, etc.) — read them before retrying. **Returns include a fresh `snapshot` of the post-click viewport (items + content) so you can chain decisions without a separate fast_snapshot call. Opt out with noSnapshot:true.** Pass screenshot:true to also get a post-click visual.',
+    description: 'Click an element matching text/label/aria-label/placeholder. Matches are auto-ranked so visible-content matches beat aria-label matches, which beat tooltip-only (title) matches; and when text scores are close, real interactive CONTROLS (button/input/radio/checkbox/[role=button|radio|checkbox|option|menuitem|tab|switch|link]) are preferred over generic links or plain text — so a radio labelled "External" beats a link reading "External", and an "I agree" checkbox beats the policy link inside its label. The right control usually wins on its own. When that\'s not enough, narrow with role (e.g. "menuitem", "option", "button") or tag (e.g. "mat-option", "a"), or use index to pick the N-th match in document order. On a miss, the response includes diagnostics explaining why (hidden, behind aria-hidden, non-interactive, off-screen, cross-origin iframe, etc.) — read them before retrying (on very large pages these diagnostics may be partial/count-only, since heavy pages are now bounded rather than allowed to freeze). **Returns include a `snapshot` (items + content) so you can chain decisions without a separate fast_snapshot call — but it reflects the MATCH-TIME (pre-click) DOM (reused from the click\'s own element walk), NOT a fresh post-click capture. For state the click just produced (a dropdown it opened, a re-render), issue an explicit fast_snapshot or fast_wait. Opt out with noSnapshot:true.** Pass screenshot:true to also get a post-click visual.',
     inputSchema: {
       type: 'object',
       properties: {
         text: { type: 'string', description: 'Text content / label / aria-label / placeholder substring (case-insensitive)' },
         role: { type: 'string', description: 'Restrict to elements whose [role] attribute equals this (e.g. "menuitem", "option", "button", "tab"). Use when text alone matches the wrong element.' },
         tag: { type: 'string', description: 'Restrict to elements whose HTML tag equals this (lowercase, e.g. "a", "button", "mat-option"). Use for design-system custom elements.' },
-        index: { type: 'number', description: 'Pick the N-th match (0-based) after ranking. Use when first match is still wrong.' },
+        index: { type: 'number', description: 'Pick the N-th match (0-based) in stable DOCUMENT order (deterministic across re-renders), NOT rank order. Omit to take the best-ranked match. Use when the best-ranked match is still wrong.' },
         screenshot: { type: 'boolean', description: 'If true, capture a screenshot after clicking and return its /tmp path in the result.' },
         screenshotFormat: { type: 'string', enum: ['png', 'jpeg'], description: 'Format for the inline screenshot (default png).' },
       },
@@ -137,13 +137,16 @@ export const TOOLS = [
   },
   {
     name: 'fast_fill',
-    description: 'Fill input/textarea/contenteditable by label/placeholder/name. Replaces existing value by default; pass append: true to keep and add to existing. Returns include a fresh `snapshot` of the post-fill viewport (opt out with noSnapshot:true).',
+    description: 'Fill input/textarea/contenteditable by label/placeholder/name. An EXACT label/aria-label/placeholder/name match is preferred over a substring match, so "Email" won\'t lose to "Email confirmation". Replaces existing value by default; pass append: true to keep and add to existing. When the same label repeats, disambiguate with `index` (N-th match in document order), `section` (scope to the group under a matching heading/legend), or `near` (scope to the field nearest matching context text). Returns include a `snapshot` (opt out with noSnapshot:true) that reflects the MATCH-TIME (pre-fill) DOM, reused from the fill\'s own field walk — NOT a fresh post-fill capture; for a post-fill re-render issue an explicit fast_snapshot or fast_wait. On very large pages a miss\'s diagnostics may be partial/count-only (heavy pages are bounded, not frozen).',
     inputSchema: {
       type: 'object',
       properties: {
-        match: { type: 'string', description: 'Placeholder/label/name/aria-label/text substring to match the field' },
+        match: { type: 'string', description: 'Placeholder/label/name/aria-label/text substring to match the field. An exact match is preferred over a substring match.' },
         value: { type: 'string', description: 'Value to fill in' },
         append: { type: 'boolean', description: 'If true, append to existing value instead of replacing' },
+        index: { type: 'number', description: 'When multiple fields match, pick the N-th (0-based) in stable DOCUMENT order. Omit to take the best/exact match.' },
+        section: { type: 'string', description: 'Scope the field match to the group of fields under a heading/legend/fieldset whose text matches this (e.g. "Billing address"). Use when the same label appears in multiple sections.' },
+        near: { type: 'string', description: 'Scope the field match to the field nearest this context text on the page. Use to disambiguate repeated labels by surrounding content.' },
       },
       required: ['match', 'value'],
     },
@@ -162,7 +165,7 @@ export const TOOLS = [
   },
   {
     name: 'fast_nav',
-    description: 'Navigate the active Chrome tab to a URL. Waits for the load to complete (up to waitMs, default 10000) before returning — override with waitMs to wait longer for slow pages or shorter to return early. Then returns `contentScript`: "fresh" (the page.js content script was already live), "reinjected" (it was stale/missing — common after the extension was reloaded — so FastLink re-injected it), or "stale" (still not live, e.g. a restricted chrome:// URL; subsequent snapshot/click may fail — try fast_reload).',
+    description: 'Navigate the active Chrome tab to a URL. Waits for the load to complete (up to waitMs, default 10000) before returning — override with waitMs to wait longer for slow pages or shorter to return early. Then HEALTH-CHECKS the page.js content script (with a short settle-retry, because it re-attaches asynchronously and can race the return — which is what made post-nav snapshots come back empty) and returns `contentScript`: "fresh" (it was already live), "reinjected" (it was stale/missing — common after the extension was reloaded — so FastLink re-injected it), or "stale" (still not live, e.g. a restricted chrome:// URL). A "stale" result ALSO includes a `hint`: subsequent snapshot/click/wait may return empty or falsely idle, so call fast_reload to recover.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -250,7 +253,7 @@ export const TOOLS = [
   },
   {
     name: 'fast_screenshot',
-    description: 'Capture a screenshot of the active Chrome tab. Saves as PNG to /tmp/ and returns the file path. Use Read on the path to view the image.',
+    description: 'Capture a screenshot of the active Chrome tab. Saves as PNG to the OS temp dir and returns the file path. Use Read on the path to view the image.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -370,19 +373,19 @@ export const TOOLS = [
   },
   {
     name: 'fast_hover',
-    description: 'Hover over an element matching text/label/aria-label/placeholder. Fires mouseenter/mouseover/mousemove. Useful for triggering tooltips, hover-only menus, lazy hover-loaded content. Returns include a fresh `snapshot` of the post-hover viewport — useful for capturing tooltips/menus that appeared (opt out with noSnapshot:true).',
+    description: 'Hover over an element matching text/label/aria-label/placeholder. Fires mouseenter/mouseover/mousemove. Useful for triggering tooltips, hover-only menus, lazy hover-loaded content. Returns include a `snapshot` (opt out with noSnapshot:true), but it reflects the MATCH-TIME (pre-hover) DOM, reused from the hover\'s own element walk — so a tooltip/menu the hover JUST revealed will NOT be in it; issue an explicit fast_snapshot (or fast_wait for its text) to capture what appeared.',
     inputSchema: {
       type: 'object',
       properties: {
         text: { type: 'string', description: 'Text/label/aria-label/placeholder substring (case-insensitive)' },
-        index: { type: 'number', description: 'Pick the N-th match (0-based) when text is ambiguous' },
+        index: { type: 'number', description: 'Pick the N-th match (0-based) in document order when text is ambiguous' },
       },
       required: ['text'],
     },
   },
   {
     name: 'fast_drag',
-    description: 'Drag from one element to another (or to coordinates). Synthesizes mousedown→mousemove(s)→mouseup, which works for sliders, sortable lists, canvas drawing, and most JS-handled drag UIs. May NOT trigger native HTML5 drag-and-drop handlers (those listen to DragEvent — different protocol). Returns include a fresh `snapshot` of the post-drag viewport (opt out with noSnapshot:true).',
+    description: 'Drag from one element to another (or to coordinates). Synthesizes mousedown→mousemove(s)→mouseup, which works for sliders, sortable lists, canvas drawing, and most JS-handled drag UIs. May NOT trigger native HTML5 drag-and-drop handlers (those listen to DragEvent — different protocol). Returns include a `snapshot` (opt out with noSnapshot:true) that reflects the MATCH-TIME (pre-drag) DOM, reused from the drag\'s own element walk — NOT a fresh post-drag capture; issue an explicit fast_snapshot for the result of the drag.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -398,11 +401,11 @@ export const TOOLS = [
   },
   {
     name: 'fast_fill_form',
-    description: 'Fill multiple fields in one call (saves N round-trips for large forms). Pass a { fields } object where keys are label/placeholder/name/aria-label substrings and values are the strings to fill. A field value may instead be an object { value, name, index, exact } to disambiguate collisions: `name` (or `exact:true`) matches the input\'s exact `name` attribute instead of a substring, and `index` (0-based) picks the N-th matching field when labels/names repeat (e.g. two product slots). Returns a per-field results map showing which were filled and which were not found, plus a fresh `snapshot` of the post-fill viewport (opt out with noSnapshot:true). A field filled while not visible (display:none/no offsetParent) but still submittable is flagged `filledButNotVisible:true`. With verify:true, each field is re-read after filling and any whose value reverted (e.g. wiped by an async AJAX re-render) is flagged `reverted:true` with its `currentValue`, and a top-level `reverted` array lists their keys.',
+    description: 'Fill multiple fields in one call (saves N round-trips for large forms). Pass a { fields } object where keys are label/placeholder/name/aria-label substrings and values are the strings to fill. A field value may instead be an object { value, name, index, exact } to disambiguate collisions: `name` (or `exact:true`) matches the input\'s exact `name` attribute instead of a substring, and `index` (0-based, N-th match in document order) picks which field when labels/names repeat (e.g. two product slots). Returns a per-field results map showing which were filled and which were not found, plus a `snapshot` (opt out with noSnapshot:true) that reflects the MATCH-TIME (pre-fill) DOM, reused from the fill\'s own field walk — NOT a fresh post-fill capture; for a post-fill re-render issue an explicit fast_snapshot or fast_wait. A field filled while not visible (display:none/no offsetParent) but still submittable is flagged `filledButNotVisible:true`. With verify:true, each field is re-read after filling and any whose value reverted (e.g. wiped by an async AJAX re-render) is flagged `reverted:true` with its `currentValue`, and a top-level `reverted` array lists their keys.',
     inputSchema: {
       type: 'object',
       properties: {
-        fields: { type: 'object', description: 'Map of match-string → value, e.g. { "email": "...", "phone number": "...", "country": "US" }. Each key is matched case-insensitively against label/placeholder/name/aria-label. A value may also be an object { value, name, index, exact }: `name` matches the field\'s exact `name` attribute, `exact:true` matches the key as an exact name, and `index` (0-based) selects which of multiple matches to fill.' },
+        fields: { type: 'object', description: 'Map of match-string → value, e.g. { "email": "...", "phone number": "...", "country": "US" }. Each key is matched case-insensitively against label/placeholder/name/aria-label. A value may also be an object { value, name, index, exact }: `name` matches the field\'s exact `name` attribute, `exact:true` matches the key as an exact name, and `index` (0-based) selects which of multiple matches to fill in document order.' },
         append: { type: 'boolean', description: 'If true, append to existing field values instead of replacing.' },
         stopOnError: { type: 'boolean', description: 'If true, stop on the first missing/failed field. Default: keep going so you see all misses at once.' },
         verify: { type: 'boolean', description: 'If true, re-read each field after filling and flag any whose value did not stick (reverted by an async re-render) as reverted:true, plus a top-level `reverted` array of their keys.' },
@@ -474,7 +477,7 @@ export const TOOLS = [
   },
   {
     name: 'fast_click_xy',
-    description: 'Trusted click at a pixel via the CDP Input domain (a REAL mouse event, isTrusted:true) — unlike fast_click\'s injected JS, LWC/React widgets honor it and it can focus an iframe input with no DOM reach-in. Coordinates are TOP-LEVEL VIEWPORT CSS pixels: if the target lives inside an iframe, add the iframe\'s page offset to its in-iframe getBoundingClientRect before passing (a same-origin frame\'s offset is its own frameElement.getBoundingClientRect on the parent page). Playbook for stubborn React/iframe fields: read the field\'s rect via fast_evaluate (getBoundingClientRect, use its center x/y), fast_click_xy there to focus it (trusted), then fast_type to enter text.',
+    description: 'Trusted click at a pixel via the CDP Input domain (a REAL mouse event, isTrusted:true) — unlike fast_click\'s injected JS, LWC/React widgets honor it and it can focus an iframe input with no DOM reach-in. Coordinates are TOP-LEVEL VIEWPORT CSS pixels: if the target lives inside an iframe, add the iframe\'s page offset to its in-iframe getBoundingClientRect before passing (a same-origin frame\'s offset is its own frameElement.getBoundingClientRect on the parent page). x and y are validated as numbers — a missing/non-numeric coordinate returns an error instead of silently clicking (0,0). Playbook for stubborn React/iframe fields: read the field\'s rect via fast_evaluate (getBoundingClientRect, use its center x/y), fast_click_xy there to focus it (trusted), then fast_type to enter text.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -517,11 +520,12 @@ export const TOOLS = [
   },
   {
     name: 'fast_type',
-    description: 'Trusted typing into whatever element currently has focus, via CDP Input.insertText — React/LWC accept it because it\'s a real input event (unlike setting .value). Does NOT target a selector; it goes to the focused element, so focus first (e.g. fast_click_xy on the field\'s coordinates). Pairs with fast_click_xy: read field coords via fast_evaluate getBoundingClientRect, fast_click_xy to focus, then fast_type to enter the text.',
+    description: 'Trusted typing into whatever element currently has focus, via CDP Input.insertText — React/LWC accept it because it\'s a real input event (unlike setting .value). Does NOT target a selector; it goes to the focused element, so focus first (e.g. fast_click_xy on the field\'s coordinates). Pairs with fast_click_xy: read field coords via fast_evaluate getBoundingClientRect, fast_click_xy to focus, then fast_type to enter the text. ERRORS with {error:"fast_type: no editable element focused — click/focus the field first"} if nothing editable has focus (so a mis-aimed focus click no longer silently types into the void). Pass clear:true to REPLACE a pre-filled value instead of appending to it (it select-all + deletes the field first — use this when a field has a default like "API key 4"). The return echoes where the text landed: into:{tag,type,label,value}, so you can confirm the right field got it.',
     inputSchema: {
       type: 'object',
       properties: {
         text: { type: 'string', description: 'Text to insert into the currently-focused element.' },
+        clear: { type: 'boolean', description: 'If true, select-all + delete the focused field before typing so the value is REPLACED, not appended (default false). Use for fields with a pre-filled default.' },
       },
       required: ['text'],
     },

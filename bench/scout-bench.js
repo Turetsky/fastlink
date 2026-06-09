@@ -2,8 +2,12 @@
 // Gemini scout latency benchmark
 const fs = require('fs');
 
-const secrets = fs.readFileSync('/mnt/c/Users/yjtur/Downloads/fastlink-secrets.txt', 'utf8');
-const KEY = (secrets.match(/^GEMINI_API_KEY=(.+)$/m) || [])[1]?.trim();
+// API key from GEMINI_API_KEY env, or a KEY=VALUE secrets file at $FASTLINK_SECRETS.
+let KEY = process.env.GEMINI_API_KEY;
+if (!KEY && process.env.FASTLINK_SECRETS) {
+  const secrets = fs.readFileSync(process.env.FASTLINK_SECRETS, 'utf8');
+  KEY = (secrets.match(/^GEMINI_API_KEY=(.+)$/m) || [])[1]?.trim();
+}
 if (!KEY) { console.error('no key'); process.exit(1); }
 
 // ---- Build realistic large digest: ~150 interactive items ----

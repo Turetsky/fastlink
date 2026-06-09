@@ -25,6 +25,32 @@ function connectorUrl(base) {
   return `${String(base || DEFAULT_RELAY_BASE).replace(/\/+$/, '')}/mcp`;
 }
 
+function pairNewUrl(base) {
+  return `${String(base || DEFAULT_RELAY_BASE).replace(/\/+$/, '')}/pair/new`;
+}
+
+// Reflect the vision/scout key state into step 2 (mirrors step 1's live status):
+// enabled → green pill + compact "saved ✓ / change" row; otherwise the input +
+// get-a-key guide. The Gemini key lives on the relay (device-token-authed); this
+// only reflects whether one is on file.
+function paintVision(enabled) {
+  const pill = $('vision-pill');
+  const field = $('gemini-field');
+  const saved = $('gemini-saved');
+  if (enabled) {
+    pill.textContent = 'Enabled';
+    pill.className = 'pill ok';
+    field.style.display = 'none';
+    saved.style.display = 'flex';
+    $('gemini-btn').textContent = 'Update key';
+  } else {
+    pill.textContent = 'Recommended';
+    pill.className = 'pill rec';
+    saved.style.display = 'none';
+    field.style.display = '';
+  }
+}
+
 // Reflect connection state into the step cards. Steps 2–4 (optional Gemini key,
 // add-to-claude.ai, watch-Claude) unlock once the browser is paired.
 function paintConnected(connected, relayBase) {
@@ -78,7 +104,9 @@ async function onSaveGeminiKey() {
     }
     let body = {}; try { body = await res.json(); } catch {}
     $('geminiKey').value = '';
-    msg.textContent = body.hasKey === false
+    const removed = body.hasKey === false;
+    paintVision(!removed);   // flip step 2 to green/enabled (or back) without a reload
+    msg.textContent = removed
       ? 'Vision key removed — FastLink continues to work DOM-only.'
       : 'Vision enabled — the scout / vision speed tier is now active for this account.';
     msg.className = 'msg ok';
@@ -162,10 +190,23 @@ async function onCopy() {
   }
 }
 
+// Keep the "Generate a code →" link pointed at the (possibly customized) relay.
+function syncGenCodeLink() {
+  const a = $('gen-code');
+  if (a) a.href = pairNewUrl(relayBaseValue());
+}
+
 $('signin-btn').addEventListener('click', onSignIn);
 $('pair-btn').addEventListener('click', onManualPair);
 $('copy-btn').addEventListener('click', onCopy);
 $('gemini-btn').addEventListener('click', onSaveGeminiKey);
+$('gemini-change').addEventListener('click', () => {
+  // Reveal the input to replace the key; keep the green "Enabled" pill.
+  $('gemini-saved').style.display = 'none';
+  $('gemini-field').style.display = '';
+  $('geminiKey').focus();
+});
+$('relayBase').addEventListener('input', syncGenCodeLink);
 $('code').addEventListener('keydown', (e) => { if (e.key === 'Enter') onManualPair(); });
 $('geminiKey').addEventListener('keydown', (e) => { if (e.key === 'Enter') onSaveGeminiKey(); });
 
@@ -185,12 +226,7 @@ async function reflectVisionStatus(base, deviceToken) {
     );
     if (!res.ok) return;
     const b = await res.json();
-    if (b?.hasKey) {
-      const msg = $('gemini-msg');
-      msg.textContent = 'Vision is currently enabled for this account. Paste a new key to replace it.';
-      msg.className = 'msg ok';
-      $('gemini-btn').textContent = 'Update key';
-    }
+    if (b?.hasKey) paintVision(true);
   } catch {}
 }
 
@@ -201,6 +237,7 @@ async function refresh() {
   const relayDisabled = c.relayEnabled === false || c.fastlinkMode === 'local';
   const connected = !!c.deviceToken && !relayDisabled;
   paintConnected(connected, base);
+  syncGenCodeLink();
   if (connected) reflectVisionStatus(base, c.deviceToken);
 }
 
