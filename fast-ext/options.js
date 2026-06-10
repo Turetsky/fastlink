@@ -8,6 +8,32 @@
 import { claimPairingCode, authorizeViaWebAuthFlow } from './src/relayClient.js';
 
 const $ = (id) => document.getElementById(id);
+
+// ---- section tabs -----------------------------------------------------------
+// Top tab bar: one section (Connection / Vision & speed / Behavior / Sites &
+// about) visible at a time. The selected tab is mirrored into location.hash so
+// a refresh (and any future deep link, e.g. options.html#vision) lands on the
+// same section.
+const TAB_DEFAULT = 'connection';
+function showTab(name) {
+  let tab = document.querySelector(`.tab[data-tab="${name}"]`);
+  if (!tab) { name = TAB_DEFAULT; tab = document.querySelector(`.tab[data-tab="${name}"]`); }
+  document.querySelectorAll('.tab').forEach((t) => {
+    const on = t === tab;
+    t.classList.toggle('active', on);
+    t.setAttribute('aria-selected', on ? 'true' : 'false');
+    t.tabIndex = on ? 0 : -1;
+  });
+  document.querySelectorAll('.tabpanel').forEach((p) => {
+    p.classList.toggle('active', p.id === `panel-${name}`);
+  });
+  if (location.hash.slice(1) !== name) history.replaceState(null, '', `#${name}`);
+}
+document.querySelectorAll('.tab').forEach((t) =>
+  t.addEventListener('click', () => showTab(t.dataset.tab)));
+window.addEventListener('hashchange', () => showTab(location.hash.slice(1)));
+showTab(location.hash.slice(1) || TAB_DEFAULT);
+
 const DEFAULT_RELAY_BASE = 'https://relay.ytx.app';
 const STORAGE_KEYS = [
   'fastlinkMode', 'localEnabled', 'relayEnabled', 'deviceToken',

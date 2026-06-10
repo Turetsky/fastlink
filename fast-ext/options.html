@@ -33,10 +33,9 @@
       -webkit-mask-image: radial-gradient(ellipse 90% 60% at 50% 0%, #000 30%, transparent 78%);
               mask-image: radial-gradient(ellipse 90% 60% at 50% 0%, #000 30%, transparent 78%);
     }
-    /* Cap the content width and center it — a full-bleed grid is a big part of
-       why the page read as a sprawling "colony". A comfortable measure makes
-       the wider cards feel intentional. */
-    .wrap { max-width: 1140px; margin: 0 auto; padding: 0 32px; position: relative; }
+    /* Single-column tabbed layout: a comfortable reading measure — cards span
+       the full width of one column, so the page never strands uneven cards. */
+    .wrap { max-width: 880px; margin: 0 auto; padding: 0 32px; position: relative; }
 
     /* ---- header ---- */
     .head {
@@ -54,50 +53,39 @@
       padding: 3px 9px; border-radius: var(--fl-r-pill);
     }
 
-    /* ---- groups ---- */
-    /* Settings are organized into a few labelled groups (Connection, Capabilities,
-       Operation, Permissions & info) instead of one flat wall of equal cards.
-       Each group gets a quiet mono divider label and generous space above it, so
-       the eye reads structure rather than a pile. */
-    .group { margin-top: 44px; }
-    .group:first-of-type { margin-top: 28px; }
-    .group-head {
-      display: flex; align-items: center; gap: 14px;
-      margin: 0 0 18px; padding: 0 2px;
+    /* ---- section tabs ---- */
+    /* Settings live under a top tab bar (Connection, Vision & speed, Behavior,
+       Sites & about) — one section visible at a time, cards stacked in a single
+       column. Replaces the old masonry groups, whose uneven card heights left
+       a lopsided bottom row. */
+    .tabs {
+      display: flex; gap: 6px; flex-wrap: wrap;
+      margin: 26px 0 24px; padding: 5px;
+      background: var(--fl-surface); border: 1px solid var(--fl-border);
+      border-radius: var(--fl-r-pill);
     }
-    .group-label {
-      font-family: var(--fl-mono); font-size: 11.5px; font-weight: 600;
-      text-transform: uppercase; letter-spacing: .16em; color: var(--fl-text-faint);
-      white-space: nowrap;
+    .tab {
+      flex: 1; text-align: center;
+      font: inherit; font-size: 13.5px; font-weight: 600;
+      padding: 8px 18px; border-radius: var(--fl-r-pill);
+      background: transparent; border: 1px solid transparent;
+      color: var(--fl-text-dim); cursor: pointer;
+      transition: background .12s ease, color .12s ease, border-color .12s ease;
     }
-    .group-rule {
-      flex: 1; height: 1px;
-      background: linear-gradient(90deg, var(--fl-border), transparent);
+    .tab:hover { color: var(--fl-text); background: var(--fl-surface-2); }
+    .tab.active {
+      background: var(--fl-signal-soft); color: var(--fl-signal);
+      border-color: color-mix(in srgb, var(--fl-signal) 35%, transparent);
     }
-
-    /* Calm 2-column masonry flow within each group, generous gaps.
-       Implemented with CSS multi-column rather than a grid: a 2-col grid with
-       auto-placement strands a cell whenever a group has an odd number of
-       uneven-height single cards (e.g. Operation's Broker + Notifications +
-       Updates), leaving a tall column beside a short one with a big void. CSS
-       columns pack cards top-to-bottom and auto-balance the column heights, so
-       there are no stranded cells. break-inside:avoid keeps each card intact;
-       margin-bottom supplies the vertical gap (column-gap supplies horizontal).
-       .span-2 spans every column for full-width cards (Connection lead, Pair,
-       Vision, Advanced). Collapses to a single column on narrow widths. */
-    .group-grid {
-      columns: 2;
-      column-gap: 22px;
+    .tab:focus-visible {
+      outline: 2px solid color-mix(in srgb, var(--fl-signal) 55%, transparent);
+      outline-offset: 1px;
     }
-    .group-grid > .card {
-      break-inside: avoid;
-      margin-bottom: 22px;
-    }
-    .group-grid > .card:last-child { margin-bottom: 0; }
-    .span-2 { column-span: all; }
-    @media (max-width: 860px) {
-      .group-grid { columns: 1; }
-    }
+    .tabpanel { display: none; }
+    .tabpanel.active { display: block; animation: flfade .16s ease; }
+    @keyframes flfade { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+    .tabpanel > .card { margin-bottom: 22px; }
+    .tabpanel > .card:last-child { margin-bottom: 0; }
 
     /* ---- cards ---- */
     .card {
@@ -281,16 +269,18 @@
       <span id="version" class="ver"></span>
     </div>
 
-    <!-- ============ GROUP: CONNECTION ============ -->
-    <section class="group">
-      <div class="group-head">
-        <span class="group-label">Connection</span>
-        <span class="group-rule"></span>
-      </div>
-      <div class="group-grid">
+    <nav class="tabs" role="tablist" aria-label="Settings sections">
+      <button class="tab" id="tab-connection" role="tab" data-tab="connection" aria-controls="panel-connection">Connection</button>
+      <button class="tab" id="tab-vision" role="tab" data-tab="vision" aria-controls="panel-vision">Vision &amp; speed</button>
+      <button class="tab" id="tab-behavior" role="tab" data-tab="behavior" aria-controls="panel-behavior">Behavior</button>
+      <button class="tab" id="tab-sites" role="tab" data-tab="sites" aria-controls="panel-sites">Sites &amp; about</button>
+    </nav>
+
+    <!-- ============ TAB: CONNECTION ============ -->
+    <section class="tabpanel" id="panel-connection" role="tabpanel" aria-labelledby="tab-connection">
 
       <!-- 1. CONNECTION (lead) -->
-      <div class="card lead span-2">
+      <div class="card lead">
         <h2>Connection</h2>
       <div class="trow">
         <div class="trow-main">
@@ -317,7 +307,7 @@
     </div>
 
       <!-- 1b. PAIR -->
-      <div class="card span-2" id="pair-card">
+      <div class="card" id="pair-card">
       <h2>Pair with the cloud relay</h2>
       <p class="desc">Pairing lets <strong>claude.ai on the web</strong> drive this browser. One click signs you in to the relay and pairs this browser automatically — no codes to copy. You only pair once per browser; you can pair multiple browsers (Claude drives whichever was opened or paired most recently).</p>
 
@@ -355,19 +345,13 @@
       </details>
     </div>
 
-      </div><!-- /group-grid -->
     </section>
 
-    <!-- ============ GROUP: CAPABILITIES ============ -->
-    <section class="group">
-      <div class="group-head">
-        <span class="group-label">Capabilities</span>
-        <span class="group-rule"></span>
-      </div>
-      <div class="group-grid">
+    <!-- ============ TAB: VISION & SPEED ============ -->
+    <section class="tabpanel" id="panel-vision" role="tabpanel" aria-labelledby="tab-vision">
 
       <!-- 2. VISION & SPEED (Gemini key) -->
-      <div class="card span-2" id="vision-card">
+      <div class="card" id="vision-card">
       <h2>Vision &amp; speed <span id="vision-pill" class="pill rec badge">Recommended</span></h2>
       <p class="desc">Add your free Google Gemini key to unlock FastLink's fastest, most capable tiers. This is core to a great experience — the key is stored on the relay (device-token authed), never typed into a chat.</p>
       <ul class="unlocks">
@@ -400,19 +384,13 @@
       <div id="gemini-msg" class="msg"></div>
     </div>
 
-      </div><!-- /group-grid -->
     </section>
 
-    <!-- ============ GROUP: OPERATION ============ -->
-    <section class="group">
-      <div class="group-head">
-        <span class="group-label">Operation</span>
-        <span class="group-rule"></span>
-      </div>
-      <div class="group-grid">
+    <!-- ============ TAB: BEHAVIOR ============ -->
+    <section class="tabpanel" id="panel-behavior" role="tabpanel" aria-labelledby="tab-behavior">
 
       <!-- 3. ADVANCED CONTROL -->
-      <div class="card span-2" id="advanced-card">
+      <div class="card" id="advanced-card">
       <h2>Advanced control <span id="dbg-pill" class="pill off badge">…</span></h2>
       <p class="desc">FastLink works out of the box with DOM-based reading, clicking, and form-filling. <strong>Advanced control</strong> is an on/off setting (default on) that enables precise coordinate clicks/typing (vision tier), running scripts on the page, and <strong>capturing tabs that aren't in front</strong> (so Claude can drive a background tab while you stay on the chat). Turn it off to limit FastLink to DOM-based reading and form-filling.</p>
       <p class="fine">This is a setting, not a Chrome permission grant — toggling it doesn't add or remove any browser permission.</p>
@@ -461,16 +439,10 @@
       <div id="update-msg" class="msg"></div>
     </div>
 
-      </div><!-- /group-grid -->
     </section>
 
-    <!-- ============ GROUP: PERMISSIONS & INFO ============ -->
-    <section class="group">
-      <div class="group-head">
-        <span class="group-label">Permissions &amp; info</span>
-        <span class="group-rule"></span>
-      </div>
-      <div class="group-grid">
+    <!-- ============ TAB: SITES & ABOUT ============ -->
+    <section class="tabpanel" id="panel-sites" role="tabpanel" aria-labelledby="tab-sites">
 
       <!-- 6. SITE PERMISSIONS -->
       <div class="card" id="perm-card">
@@ -502,7 +474,6 @@
       </div>
     </div>
 
-      </div><!-- /group-grid -->
     </section>
   </div>
 
