@@ -20,6 +20,19 @@ import {
   handleScout, handlePoint, handlePointSom, handleFillVision, handleDo, handleLocate,
 } from './composite.js';
 
+// Guidance the client (Claude) sees in the initialize result — steers it toward
+// the FAST tools instead of its default "screenshot + read it myself" instinct.
+// Keep in sync with fast-dxt/server/transports.js INSTRUCTIONS.
+const INSTRUCTIONS = [
+  'FastLink drives the user\'s real Chrome tab. Use it efficiently:',
+  '- READ a page with fast_snapshot — a fast, structured index of the DOM (readable text + clickable elements with coords). Do NOT take a screenshot to read content. (fast_scout can pre-read a page so you plan in one pass.)',
+  '- LOCATE/click something NOT in the DOM (canvas, opaque/cross-origin iframe, image, custom-rendered UI) with fast_point or fast_locate (fast_fill_vision to fill a visual form). Gemini reads the screenshot and returns the pixel coordinates FOR you — never screenshot-and-read-it-yourself; that is slow and token-heavy. fast_screenshot is for VISUAL CONFIRMATION only, never to read/parse page content.',
+  '- CHAIN a known multi-step sequence in ONE call with fast_batch (e.g. navigate → fill → click → wait) to cut round-trips.',
+  '- Fill multi-field forms with fast_fill_form in one call, not field-by-field.',
+  '- Action results (fast_click / fast_fill / fast_wait) already include a snapshot — chain off THAT; do not issue a separate fast_snapshot right after.',
+  '- Do NOT add artificial waits/sleeps — tabs load fast. Use fast_wait only when there is a real async signal (new view text, network idle), not as a reflex after every action.',
+].join('\n');
+
 // ---- JSON-RPC plumbing ----------------------------------------------------
 
 const json = (body, status = 200) =>
@@ -69,6 +82,7 @@ async function handleOne(rpc, relay) {
         protocolVersion: '2024-11-05',
         capabilities: { tools: {} },
         serverInfo: { name: 'fastlink-relay', version: '1.0.0' },
+        instructions: INSTRUCTIONS,
       });
     case 'tools/list':
       return ok(id, { tools: TOOLS });
