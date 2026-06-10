@@ -262,7 +262,19 @@ async function handleUpstreamCallback(request, env) {
     const label = String(st.label || 'browser');
     const deviceToken = randomToken();
     await db.createDevice(env.DB, userId, deviceToken, label);
-    await db.logAudit(env.DB, userId, 'pair_authorize', { label, via: 'google' });
+    await db.logAudit(env.DB, userId, 'pair_authorize', { label, via: 'google', tab: !!st.pollId });
+    // Tab-poll fallback: this is a REGULAR tab (not a launchWebAuthFlow window), so
+    // a chromiumapp.org 302 would dead-end on a placeholder page. Park the token
+    // under the extension-supplied pollId instead; the extension's JSON poll
+    // (POST /ext/authorize/wait) collects it. Token stays out of the Location URL.
+    if (st.pollId) {
+      try {
+        await db.parkPairRequest(env.DB, st.pollId, { redirectUri, state: st.state }, userId, deviceToken, PAIR_REQUEST_TTL_SEC);
+      } catch {
+        return htmlPage('Not available yet', `<p>Tab sign-in isn't enabled on this relay yet. Please use a pairing code instead.</p>`, 501);
+      }
+      return extTabSuccessPage();
+    }
     return redirectResponse(extSuccessRedirect(env, redirectUri, deviceToken, userId, st.state));
   }
   // Resuming the claude.ai OAuth flow.
@@ -500,7 +512,12 @@ async function handlePairClaim(request, env) {
 // OAuth. Key is stored AES-GCM encrypted at rest (db.setUserGeminiKey). FastLink is
 // fully usable DOM-only WITHOUT a key; this is purely the optional speed tier.
 //   POST { deviceToken, key }  -> { ok:true, hasKey } (empty/missing key clears it)
-//   GET  ?deviceToken=...      -> { hasKey }   (never returns the key itself)
+//   GET  ?deviceToken=...      -> { hasKey, effective, source } (never the key itself)
+//     hasKey    = a personal BYO key is stored for this user
+//     effective = vision actually works — own key OR the relay's operator-level
+//                 GEMINI_API_KEY/GOOGLE_API_KEY fallback (mirrors userRelay.js),
+//                 so the UI doesn't show "add a key" when vision is already live
+//     source    = 'own' | 'shared' | null
 // ===========================================================================
 async function handleSettingsGeminiKey(request, env) {
   if (request.method === 'OPTIONS') return corsPreflight();
@@ -517,7 +534,14 @@ async function handleSettingsGeminiKey(request, env) {
     const userId = await userFromToken(token);
     if (!userId) return jsonResponse({ error: 'invalid_device_token' }, 401);
     const key = await db.getUserGeminiKey(env.DB, userId, env.KEY_ENC_SECRET);
-    return jsonResponse({ hasKey: !!key });
+    // Same operator-key fallback userRelay.js uses when serving vision calls —
+    // a user without a personal key still has vision if the shared key exists.
+    const shared = !!(env.GEMINI_API_KEY || env.GOOGLE_API_KEY);
+    return jsonResponse({
+      hasKey: !!key,
+      effective: !!key || shared,
+      source: key ? 'own' : (shared ? 'shared' : null),
+    });
   }
 
   if (request.method === 'POST') {
@@ -614,6 +638,13 @@ function normalizeOrigin(raw) {
 //   302 -> <redirect_uri>#devicetoken=..&userId=..&wssUrl=wss://host/ext&state=..
 // On cancel we 302 to <redirect_uri>#error=<code>&state=.. (SIGNUP-SPEC §4.1).
 //
+// TAB-POLL FALLBACK (all modes): when the extension can't use launchWebAuthFlow it
+// opens this URL in a REGULAR tab with an extra &poll=<extension-generated id>.
+// A regular tab can't complete via the chromiumapp.org redirect, so the completion
+// path PARKS the minted token in pair_requests under the pollId instead, and the
+// extension collects it once via POST /ext/authorize/wait. Same auth, same
+// createDevice path, same validExtRedirect guard — only the delivery leg differs.
+//
 // SECURITY: redirect_uri must match ^https://[a-p]{32}.chromiumapp.org/?$ (and is
 // pinned to EXTENSION_ID when configured) BEFORE we ever redirect — an invalid
 // target renders an error page, never a redirect. This is the open-redirect guard
@@ -684,10 +715,17 @@ async function handleExtAuthorize(request, env) {
     }
     const state = String(url.searchParams.get('state') || '');
     const label = url.searchParams.get('label') ? String(url.searchParams.get('label')) : 'browser';
+    // Tab-poll fallback: an extension-generated, unguessable poll key (≥128-bit
+    // base64url/hex). When present, the completion path PARKS the minted token under
+    // it (instead of 302ing to chromiumapp.org, which only works inside a
+    // launchWebAuthFlow window) and the extension collects it via POST
+    // /ext/authorize/wait. Carried only inside the HMAC-signed state — never trusted
+    // from a later request. Malformed values degrade to the redirect flow.
+    const pollId = validPollId(url.searchParams.get('poll'));
 
     if (mode === 'shared') {
       // Sign the ext-auth context so the POST can trust redirect_uri/state/label.
-      const reqToken = await signState(env, { x: 'ext_pair', redirectUri, state, label });
+      const reqToken = await signState(env, { x: 'ext_pair', redirectUri, state, label, pollId });
       const oneClick = await hasPairSession(request, env);
       return extAuthorizeSharedForm(reqToken, oneClick);
     }
@@ -697,7 +735,7 @@ async function handleExtAuthorize(request, env) {
       // The email link can't complete the isolated launchWebAuthFlow window, so the
       // POST will create a pair_request + serve a self-polling /ext/authorize/wait
       // page that 302s once the link is clicked elsewhere (SIGNUP-SPEC §1.5).
-      const reqToken = await signState(env, { x: 'ext_pair', redirectUri, state, label });
+      const reqToken = await signState(env, { x: 'ext_pair', redirectUri, state, label, pollId });
       return emailEntryPage('/ext/authorize', reqToken);
     }
 
@@ -707,9 +745,10 @@ async function handleExtAuthorize(request, env) {
       // email round-trip, no polling/wait-page needed. Stash the (already-validated)
       // extension redirect_uri + state + label into the signed OAuth `state` we hand
       // Google (intent:'ext_pair'); the callback re-validates them, mints a device
-      // token, and 302s to the chromiumapp.org redirect. `state` is HMAC-signed
-      // (COOKIE_SECRET) → anti-CSRF + tamper-proof through Google.
-      const oauthState = await signState(env, { intent: 'ext_pair', redirectUri, state, label });
+      // token, and 302s to the chromiumapp.org redirect (or parks it under pollId in
+      // the tab-poll flow). `state` is HMAC-signed (COOKIE_SECRET) → anti-CSRF +
+      // tamper-proof through Google.
+      const oauthState = await signState(env, { intent: 'ext_pair', redirectUri, state, label, pollId });
       return Response.redirect(googleAuthUrl(env, oauthState), 302);
     }
 
@@ -729,7 +768,12 @@ async function handleExtAuthorize(request, env) {
     const label = String(st.label || 'browser');
 
     // Explicit cancel → bounce to the extension with an error fragment (SIGNUP-SPEC §4.1).
+    // Tab-poll flow: no auth window to complete — render a plain page (the extension's
+    // poll simply never resolves; closing the tab aborts it client-side).
     if (form.get('cancel')) {
+      if (st.pollId) {
+        return htmlPage('Canceled', `<p>Sign-in was canceled. You can close this tab and retry from the FastLink settings page.</p>`);
+      }
       return redirectResponse(extRedirectWithFragment(redirectUri, { error: 'access_denied', state }));
     }
 
@@ -747,8 +791,18 @@ async function handleExtAuthorize(request, env) {
       await db.setOperator(env.DB, userId, true); // bootstrap single-user IS the operator
       const deviceToken = randomToken();
       await db.createDevice(env.DB, userId, deviceToken, label);
-      await db.logAudit(env.DB, userId, 'pair_authorize', { label, via: 'shared' });
+      await db.logAudit(env.DB, userId, 'pair_authorize', { label, via: 'shared', tab: !!st.pollId });
       const headers = secretOk ? { 'set-cookie': await pairSessionCookie(env) } : {};
+      // Tab-poll fallback: park the token for the extension's JSON poll instead of
+      // 302ing to chromiumapp.org (dead-end placeholder outside launchWebAuthFlow).
+      if (st.pollId) {
+        try {
+          await db.parkPairRequest(env.DB, st.pollId, { redirectUri, state }, userId, deviceToken, PAIR_REQUEST_TTL_SEC);
+        } catch {
+          return htmlPage('Not available yet', `<p>Tab sign-in isn't enabled on this relay yet. Please use a pairing code instead.</p>`, 501);
+        }
+        return extTabSuccessPage(headers);
+      }
       return redirectResponse(extSuccessRedirect(env, redirectUri, deviceToken, userId, state), headers);
     }
 
@@ -756,9 +810,13 @@ async function handleExtAuthorize(request, env) {
       // Phase 2 (dark): create a pair_request, email the link, 302 to the wait-page
       // (stays inside the auth window). The link's callback binds the token; the
       // wait-page then 302s to chromiumapp.org. (SIGNUP-SPEC §1.5 step 1.)
+      // Tab-poll fallback: the extension supplied its own pollId (signed state), so
+      // reuse it — the emailed link's callback binds the token to it as usual, and
+      // the EXTENSION's JSON poll collects it (no self-polling wait-page needed;
+      // this tab just shows "check your email").
       const email = normalizeEmail(form.get('email'));
       if (!email) return htmlPage('Invalid email', `<p>Please enter a valid email address.</p>`, 400);
-      const pollId = randomToken();
+      const pollId = st.pollId || randomToken();
       try {
         await db.createPairRequest(env.DB, pollId, { redirectUri, state }, PAIR_REQUEST_TTL_SEC);
       } catch {
@@ -772,6 +830,7 @@ async function handleExtAuthorize(request, env) {
       // If startMagicLogin short-circuited (rate-limited 429 / email send failure),
       // surface that page instead of bouncing to a wait-page that will never resolve.
       if (sent && sent.status >= 400) return sent;
+      if (st.pollId) return sent;
       return redirectResponse('/ext/authorize/wait?pt=' + encodeURIComponent(pollId));
     }
 
@@ -826,12 +885,18 @@ function extAuthorizeSharedForm(reqToken, oneClick, errorMsg) {
 // context than the email click); otherwise re-render with a ~2s meta-refresh.
 // Needs the pair_requests table (future migration + deploy).
 async function handleExtAuthorizeWait(request, env) {
-  if (request.method !== 'GET') return new Response('method not allowed', { status: 405 });
-  // M5: generous IP cap (this page self-polls; a tight limit would break it).
+  if (request.method === 'OPTIONS') return corsPreflight();
+  if (request.method !== 'GET' && request.method !== 'POST') {
+    return new Response('method not allowed', { status: 405 });
+  }
+  // M5: generous IP cap (both the HTML wait-page and the extension's JSON poll
+  // self-poll every ~2s; a tight limit would break them). One shared bucket.
   const rl = await ipRateLimit(env, request, 'extauthwait', EXTAUTH_WAIT_IP_LIMIT, RL_WINDOW_SEC);
   if (!rl.allowed) {
+    if (request.method === 'POST') return jsonResponse({ error: 'rate_limited', retryAfter: rl.retryAfterSec }, 429);
     return htmlPage('Too many requests', `<p>Too many requests — please retry sign-in from the extension.</p>`, 429, { 'retry-after': String(rl.retryAfterSec) });
   }
+  if (request.method === 'POST') return extAuthorizeWaitPoll(request, env);
   const pollId = String(new URL(request.url).searchParams.get('pt') || '');
   if (!pollId) return htmlPage('Invalid request', `<p>Missing poll id.</p>`, 400);
 
@@ -862,6 +927,59 @@ async function handleExtAuthorizeWait(request, env) {
     200,
     { refresh: `2; url=${waitUrl}` }
   );
+}
+
+// Tab-poll JSON branch of /ext/authorize/wait (POST {pollId} from the extension,
+// every ~2s). RELEASES, never mints: it only hands out a token an authenticated
+// sign-in already parked under this pollId, exactly once (consumePairRequest
+// deletes the row atomically — a replayed pollId gets nothing). The token rides
+// the JSON response BODY, never a URL, so it stays out of access logs (audit T5).
+// Pending and unknown/expired are both {status:'pending'} — an unguessable-pollId
+// probe learns nothing; the extension applies its own overall timeout.
+async function extAuthorizeWaitPoll(request, env) {
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse({ error: 'invalid_json' }, 400);
+  }
+  const pollId = validPollId(body && body.pollId);
+  if (!pollId) return jsonResponse({ error: 'invalid_poll_id' }, 400);
+  let pr;
+  try {
+    pr = await db.consumePairRequest(env.DB, pollId);
+  } catch {
+    // Table not present (pre-migration) — the extension falls back to the code path.
+    return jsonResponse({ error: 'not_supported' }, 501);
+  }
+  if (!pr) return jsonResponse({ status: 'pending' });
+  // Param names mirror extSuccessRedirect (SIGNUP-SPEC §1.3/§4.1): devicetoken, userId, wssUrl.
+  return jsonResponse({
+    devicetoken: pr.deviceToken,
+    userId: String(pr.userId),
+    wssUrl: wssBase(env) + '/ext',
+  });
+}
+
+// Rendered in the REGULAR sign-in tab once the token is parked (tab-poll flow).
+// The extension's poll collects the token and closes this tab best-effort.
+function extTabSuccessPage(extraHeaders = {}) {
+  return htmlPage(
+    'Signed in',
+    `<p>✓ Connected. FastLink will finish pairing automatically — this tab closes itself in a moment.</p>
+     <p class="muted">If it doesn't, you can close it and return to the FastLink settings page.</p>`,
+    200,
+    extraHeaders
+  );
+}
+
+// Extension-generated poll key: base64url/hex, ≥22 chars (≥128 bits at base64url
+// density). Anything else is treated as absent so the flow degrades to the
+// redirect path instead of trusting a malformed key.
+const POLL_ID_RE = /^[A-Za-z0-9_-]{22,128}$/;
+function validPollId(raw) {
+  const s = String(raw || '');
+  return POLL_ID_RE.test(s) ? s : '';
 }
 
 // ===========================================================================

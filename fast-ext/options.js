@@ -5,7 +5,7 @@
 // broker slot, desktop notifications, and per-origin site permissions.
 // Applying a transport change reloads the extension so background.js re-reads config.
 
-import { claimPairingCode, authorizeViaWebAuthFlow } from './src/relayClient.js';
+import { claimPairingCode, authorizeViaWebAuthFlow, authorizeViaTabPoll } from './src/relayClient.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -35,6 +35,16 @@ window.addEventListener('hashchange', () => showTab(location.hash.slice(1)));
 showTab(location.hash.slice(1) || TAB_DEFAULT);
 
 const DEFAULT_RELAY_BASE = 'https://relay.ytx.app';
+
+// Keep the disclosure's "Generate a code →" link pointed at the (possibly
+// customized) relay — same scheme as onboarding.js.
+function pairNewUrl(base) {
+  return `${String(base || DEFAULT_RELAY_BASE).replace(/\/+$/, '')}/pair/new`;
+}
+function syncGenCodeLink() {
+  const a = $('gen-code');
+  if (a) a.href = pairNewUrl(($('relayBase').value || '').trim());
+}
 const STORAGE_KEYS = [
   'fastlinkMode', 'localEnabled', 'relayEnabled', 'deviceToken',
   'relayBase', 'relayWssUrl', 'relayUserId', 'relayAuthError', 'fastlinkConn',
@@ -149,6 +159,7 @@ async function render() {
 
   // Pre-fill the relay base from the last-used value so the user rarely re-types it.
   if (c.relayBase) $('relayBase').value = c.relayBase;
+  syncGenCodeLink();
 
   // Toggle the local/relay control button label to match what it will do.
   const localBtn = $('local-btn');
@@ -176,13 +187,21 @@ async function bringRelayUp() {
 }
 
 // One-click: chrome.identity.launchWebAuthFlow → relay mints the device token →
-// store + start the relay live. No code paste, no reload.
+// store + start the relay live. No code paste, no reload. If the auth window
+// fails (popup blocked, flow error, 2nd-profile quirks), fall back to the
+// automatic tab-poll flow — the manual pairing code stays as the LAST resort.
 async function onSignIn() {
   const btn = $('signin-btn');
   btn.disabled = true;
   showMsg('Opening the sign-in window…', 'ok');
   try {
-    const { userId } = await authorizeViaWebAuthFlow($('relayBase').value);
+    let userId;
+    try {
+      ({ userId } = await authorizeViaWebAuthFlow($('relayBase').value));
+    } catch {
+      showMsg('Opening a sign-in tab instead…', 'ok');
+      ({ userId } = await authorizeViaTabPoll($('relayBase').value));
+    }
     const live = await bringRelayUp();
     showMsg(live
       ? `Connected${userId ? ` as ${userId}` : ''}. The cloud relay is now active.`
@@ -265,16 +284,26 @@ async function onDisconnectToggle() {
 // on file. The key lives on the relay (device-token authed) — this page only
 // reflects/edits whether one exists, never reads it back.
 // ---------------------------------------------------------------------------
-function paintVision(enabled) {
+// `source` distinguishes WHY vision is enabled: 'own' = user's BYO key is on
+// file; 'shared' = no personal key, but the relay's operator-level Gemini key
+// covers this user (so the "add a key" pitch would be wrong). Omitted/unknown
+// source is treated as 'own' for back-compat with relays that predate it.
+function paintVision(enabled, source) {
   const pill = $('vision-pill');
   const field = $('gemini-field');
   const saved = $('gemini-saved');
   if (enabled) {
+    const shared = source === 'shared';
     pill.textContent = 'Enabled';
     pill.className = 'pill ok badge';
     field.style.display = 'none';
     saved.style.display = 'flex';
-    $('gemini-btn').textContent = 'Update key';
+    $('gemini-saved-text').textContent = shared
+      ? "Vision enabled — using the relay's shared key"
+      : 'Vision enabled — key saved';
+    // Shared-key users have no key to "change" — offer the upgrade path instead.
+    $('gemini-change').textContent = shared ? 'Use your own key' : 'Change key';
+    $('gemini-btn').textContent = shared ? 'Save key' : 'Update key';
   } else {
     pill.textContent = 'Recommended';
     pill.className = 'pill rec badge';
@@ -310,7 +339,9 @@ async function onSaveGeminiKey() {
     let body = {}; try { body = await res.json(); } catch {}
     $('geminiKey').value = '';
     const removed = body.hasKey === false;
-    paintVision(!removed);
+    // Removal doesn't necessarily disable vision — the relay's shared key may
+    // still cover this user, so re-ask the relay instead of painting false.
+    if (removed) reflectVisionStatus(); else paintVision(true, 'own');
     msg.textContent = removed
       ? 'Vision key removed — FastLink continues to work DOM-only.'
       : 'Vision enabled — the scout / vision speed tier is now active for this account.';
@@ -333,7 +364,9 @@ async function reflectVisionStatus() {
     const res = await fetch(`${base}/settings/gemini-key?deviceToken=${encodeURIComponent(c.deviceToken)}`);
     if (!res.ok) return;
     const b = await res.json();
-    paintVision(!!b?.hasKey);
+    // `effective`/`source` are newer relay fields — fall back to hasKey so an
+    // updated extension still renders correctly against an older relay.
+    paintVision(!!(b?.effective ?? b?.hasKey), b?.source || (b?.hasKey ? 'own' : null));
   } catch {}
 }
 
@@ -599,7 +632,7 @@ async function onUseLocal() {
 
 // Deep-link handoff: the relay's pairing page (or its copyable link) can open
 // this page with ?relay=<url>&code=<code> to pre-fill both fields. Returns true
-// when a code was supplied so the caller can focus the Pair button.
+// when a code was supplied so the caller can auto-run the pairing.
 function applyDeepLinkParams() {
   let params;
   try { params = new URLSearchParams(location.search); } catch { return false; }
@@ -614,6 +647,7 @@ function applyDeepLinkParams() {
 $('relayBase').addEventListener('change', () => {
   const v = $('relayBase').value.trim();
   if (v) chrome.storage.local.set({ relayBase: v });
+  syncGenCodeLink();
 });
 
 $('signin-btn').addEventListener('click', onSignIn);
@@ -684,9 +718,23 @@ async function init() {
   renderPermissions();
   reflectVisionStatus();
   // Deep-link params win over stored/default values (they reflect a fresh code).
-  if (applyDeepLinkParams()) {
-    $('pair-btn').focus();
-    showMsg('Pairing code loaded from the relay — click "Pair with code".', 'ok');
+  // Auto-pair: a deep-linked code is fresh (just minted on the relay), so run the
+  // pairing immediately — but only once per page load, and never when this browser
+  // already holds an active pairing (an accidental re-open must not silently
+  // re-mint a device token over the existing one).
+  if (applyDeepLinkParams() && !autoPairRan) {
+    autoPairRan = true;
+    const c = await chrome.storage.local.get(['deviceToken', 'relayEnabled', 'fastlinkMode']);
+    const alreadyPaired = !!c.deviceToken && !(c.relayEnabled === false || c.fastlinkMode === 'local');
+    if (alreadyPaired) {
+      $('pair-btn').focus();
+      showMsg('Pairing code loaded — this browser is already paired; click "Pair with code" to re-pair anyway.', 'ok');
+    } else {
+      onPair();
+    }
   }
 }
+// One-shot guard for the deep-link auto-pair (init only runs once, but keep the
+// intent explicit and future-proof against re-entrant init calls).
+let autoPairRan = false;
 init();

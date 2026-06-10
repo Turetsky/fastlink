@@ -249,14 +249,19 @@ export async function claimMagicLink(db, jti) {
   return row ? { email: row.email } : null;
 }
 
-// --- pair requests (magic-mode one-click pairing) ---------------------------
-// PHASE 2 / DARK (SIGNUP-SPEC §1.6): backs the launchWebAuthFlow self-polling
-// wait-page. The auth window can't be completed by a magic link clicked in the
-// user's normal tab (different context), so we persist the pending request keyed by
-// `pollId`; the link's callback BINDS a minted device token, and the still-open auth
-// window (refreshing /ext/authorize/wait → claimPairRequest) performs the final
-// redirect. Requires the pair_requests table — NOT YET MIGRATED/DEPLOYED. Call sites
-// are try/catch-guarded so a pre-migration relay degrades to "use a pairing code".
+// --- pair requests (poll-bridged one-click pairing) --------------------------
+// Backs TWO context bridges over the same table, keyed by `pollId`:
+//   1. Magic-mode launchWebAuthFlow (SIGNUP-SPEC §1.6, phase 2/dark): the auth
+//      window can't be completed by a magic link clicked in the user's normal tab,
+//      so the link's callback BINDS a minted device token and the still-open auth
+//      window (refreshing /ext/authorize/wait → claimPairRequest) performs the
+//      final redirect.
+//   2. Tab-poll fallback (ALL identity modes): the extension opens /ext/authorize
+//      in a regular tab with its own pollId; the authenticated sign-in PARKS the
+//      minted token (parkPairRequest / bindPairRequest) and the extension's JSON
+//      poll (POST /ext/authorize/wait → consumePairRequest) collects it ONCE.
+// Requires the pair_requests table. Call sites are try/catch-guarded so a
+// pre-migration relay degrades to "use a pairing code".
 
 // Create a pending pair request valid for ttlSec seconds.
 export async function createPairRequest(db, pollId, { redirectUri, state }, ttlSec) {
@@ -283,6 +288,39 @@ export async function bindPairRequest(db, pollId, userId, deviceToken) {
     .bind(String(userId), String(deviceToken), ts, String(pollId), ts)
     .run();
   return !!(upd.meta && upd.meta.changes === 1);
+}
+
+// Park an already-minted device token under an extension-supplied pollId (tab-poll
+// flow, shared/google modes: no pending row exists — the row is created BOUND at
+// sign-in completion). INSERT OR REPLACE: only authenticated completion paths call
+// this, so a replace can only overwrite the caller's own session.
+export async function parkPairRequest(db, pollId, { redirectUri, state }, userId, deviceToken, ttlSec) {
+  const ts = now();
+  await db
+    .prepare(
+      `INSERT OR REPLACE INTO pair_requests (poll_id, redirect_uri, state, user_id, device_token, created_at, expires_at, bound_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .bind(String(pollId), String(redirectUri), String(state || ''), String(userId), String(deviceToken), ts, ts + Number(ttlSec) * 1000, ts)
+    .run();
+}
+
+// Single-use hand-out for the extension's JSON poll: atomically DELETE+RETURN a
+// bound, unexpired row (the token is released exactly once; a replayed pollId gets
+// nothing). A still-pending row is left untouched and reads as null — the JSON
+// poll can't distinguish pending from unknown, which is intentional (an
+// unguessable pollId probe learns nothing). Returns { deviceToken, userId } | null.
+export async function consumePairRequest(db, pollId) {
+  if (!pollId) return null;
+  const row = await db
+    .prepare(
+      `DELETE FROM pair_requests
+        WHERE poll_id = ? AND device_token IS NOT NULL AND expires_at > ?
+        RETURNING device_token, user_id`
+    )
+    .bind(String(pollId), now())
+    .first();
+  return row ? { deviceToken: row.device_token, userId: row.user_id } : null;
 }
 
 // Read a pair request's status (does NOT delete — the /wait 302 is the terminal step;

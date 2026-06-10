@@ -320,7 +320,7 @@
       <p class="howto-head">How to pair</p>
       <ol class="howto" id="pair-howto">
         <li><strong>Click “Sign in &amp; connect” below.</strong> A relay sign-in window opens (sign in with Google). On success this browser is paired automatically and a device token is saved here — there are no codes to copy. You only do this once per browser.</li>
-        <li><strong>No window opened, or pairing a second Chrome profile?</strong> Open <strong>“Have a pairing code instead?”</strong> further down, get a one-time code on the relay page, and paste it into the field.</li>
+        <li><strong>Sign-in window didn't work?</strong> FastLink automatically opens a regular sign-in tab instead — just sign in there; pairing completes on its own. Only if that also fails (or to pair a second Chrome profile), open <strong>“Have a pairing code instead?”</strong> further down.</li>
         <li><strong>Add FastLink in claude.ai.</strong> Go to <strong>Settings → Connectors → Add custom connector</strong>, paste <code>https://relay.ytx.app/mcp</code>, save, then click <strong>Connect</strong> and sign in with the <strong>same account</strong>.</li>
         <li><strong>Start driving.</strong> Open a chat in claude.ai and ask Claude to use FastLink on your active tab.</li>
       </ol>
@@ -335,7 +335,8 @@
 
       <details class="disclosure">
         <summary>Have a pairing code instead?</summary>
-        <p class="fine">Only needed if one-click sign-in didn't work, or to pair a second Chrome profile. Sign in on the relay page to get a one-time code, then paste it here.</p>
+        <p class="fine">Almost never needed — if sign-in fails, FastLink automatically opens a sign-in tab instead. Use a code only if that fails too (or to pair a second Chrome profile): click the link, sign in, copy the code it shows, and paste it below.</p>
+        <a id="gen-code" class="linkbtn" href="https://relay.ytx.app/pair/new" target="_blank" rel="noopener">Generate a code →</a>
         <label for="code">Pairing code</label>
         <input id="code" type="text" placeholder="K7Q2-9XBD" autocomplete="off" spellcheck="false" maxlength="20" />
         <div class="row">
@@ -378,7 +379,7 @@
       <!-- saved view (key on file) -->
       <div id="gemini-saved" class="saved-row" style="display:none;">
         <span class="chk">✓</span>
-        <span>Vision enabled — key saved</span>
+        <span id="gemini-saved-text">Vision enabled — key saved</span>
         <button id="gemini-change" class="ghost small">Change key</button>
       </div>
       <div id="gemini-msg" class="msg"></div>
@@ -403,14 +404,14 @@
       <!-- 4. BROKER SLOT -->
       <div class="card" id="install-card">
       <h2>Broker slot <span class="badge fine" style="font-weight:400;">optional</span></h2>
-      <p class="desc">Leave this on <strong>Primary</strong> unless you run FastLink in a <strong>second Chrome profile</strong> on the same machine. Each slot uses its own broker port (Primary: 9876, Secondary: 9877) so two profiles don't fight over one port. Set the second profile to <strong>Secondary</strong>.</p>
+      <p class="desc">You can skip this unless you use FastLink in <strong>two Chrome profiles</strong> on this computer. FastLink and Claude talk over a local connection on this machine, and two profiles can't share the same one — so each profile gets its own slot. Keep this profile on <strong>Primary</strong>; in the second profile's FastLink settings, choose <strong>Secondary</strong> (the slots use ports 9876 and 9877).</p>
       <label for="install-select">This browser's slot</label>
       <select id="install-select">
         <option value="primary">Primary (default · port 9876)</option>
         <option value="secondary">Secondary (2nd Chrome profile · port 9877)</option>
       </select>
       <div class="row">
-        <span class="fine" id="install-detail">Switching reloads FastLink to reconnect on the new port.</span>
+        <span class="fine" id="install-detail">Switching reloads FastLink so it reconnects on the new slot.</span>
       </div>
     </div>
 
@@ -447,7 +448,14 @@
       <!-- 6. SITE PERMISSIONS -->
       <div class="card" id="perm-card">
       <h2>Site permissions</h2>
-      <p class="desc">Per-origin consent for the cloud relay. Each site Claude touches can be set to <strong>Allow</strong> (read &amp; act), <strong>Read-only</strong> (read but don't act), or <strong>Block</strong>. Changes sync to the relay; removing a row clears the local record.</p>
+      <p class="desc">Control what Claude can do on each website when it drives this browser from claude.ai.</p>
+      <ul class="unlocks">
+        <li><b>Allow</b> — Claude can read the page and act on it (click, type, navigate).</li>
+        <li><b>Read-only</b> — Claude can read the page but not click or type.</li>
+        <li><b>Block</b> — Claude can't see or touch the site.</li>
+      </ul>
+      <p class="desc">Sites appear here automatically the first time Claude tries to use them (you'll get an Allow/Deny prompt), or add one yourself below. Removing a row (×) just forgets the choice — you'll be asked again next time.</p>
+      <p class="fine">These choices apply when Claude connects through the cloud relay (claude.ai). Local Claude Code / Claude Desktop isn't gated by this list.</p>
       <div id="perm-list" class="perm-list"></div>
       <div class="perm-add">
         <input id="perm-origin" type="url" placeholder="https://example.com" autocomplete="off" spellcheck="false" />

@@ -2,11 +2,12 @@
 // Step 1: one-click "Sign in & connect" via chrome.identity.launchWebAuthFlow
 // (authorizeViaWebAuthFlow) → relay hands back a device token → we ask
 // background.js to bring the relay transport up LIVE (no extension reload, so
-// this page survives to show the connected state + step 2). Manual pairing-code
-// entry stays as a fallback behind a disclosure.
+// this page survives to show the connected state + step 2). If the auth window
+// fails, authorizeViaTabPoll opens a regular sign-in tab automatically; manual
+// pairing-code entry stays as the LAST-resort fallback behind a disclosure.
 // Step 2: shows the claude.ai connector URL with a Copy button + instructions.
 
-import { authorizeViaWebAuthFlow, claimPairingCode } from './src/relayClient.js';
+import { authorizeViaWebAuthFlow, authorizeViaTabPoll, claimPairingCode } from './src/relayClient.js';
 
 const $ = (id) => document.getElementById(id);
 const DEFAULT_RELAY_BASE = 'https://relay.ytx.app';
@@ -145,7 +146,17 @@ async function onSignIn() {
   showMsg('Opening the sign-in window…', 'info');
   try {
     const base = relayBaseValue();
-    const { userId } = await authorizeViaWebAuthFlow(base);
+    // launchWebAuthFlow first; on failure (popup blocked, flow error, 2nd-profile
+    // quirks) fall back to the automatic tab-poll flow — same as options.js. The
+    // pairing-code disclosure stays as the last resort.
+    let userId;
+    try {
+      ({ userId } = await authorizeViaWebAuthFlow(base));
+    } catch {
+      $('signin-hint').textContent = 'Opening a sign-in tab instead…';
+      showMsg('Opening a sign-in tab instead…', 'info');
+      ({ userId } = await authorizeViaTabPoll(base));
+    }
     const live = await bringRelayUp();
     if (live) {
       paintConnected(true, base);

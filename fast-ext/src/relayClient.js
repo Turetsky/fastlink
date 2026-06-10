@@ -422,7 +422,104 @@ export async function authorizeViaWebAuthFlow(relayBase) {
   return { userId, wssUrl };
 }
 
-// Shared storage-write tail for BOTH pairing paths (manual code + web-auth).
+// ---------------------------------------------------------------------------
+// Tab-poll fallback: fully automatic pairing when launchWebAuthFlow fails
+// (popup blocked, flow error, 2nd-profile quirks). Opens the relay's
+// /ext/authorize in a REGULAR tab (chrome.tabs.create — popup blockers don't
+// apply) carrying an unguessable extension-generated pollId; the relay parks the
+// minted device token under that pollId at sign-in completion, and we collect it
+// here by POSTing /ext/authorize/wait every ~2s (token rides the response BODY,
+// never a URL). Single-use server-side: the relay deletes the row on hand-out.
+// Requires a relay that knows the `poll` param — an older relay answers the poll
+// with 405/501, which we surface as "use a pairing code instead" (graceful
+// degradation to the manual path). Same persistRelayPairing storage tail as the
+// other two flows.
+// ---------------------------------------------------------------------------
+const TAB_POLL_INTERVAL_MS = 2_000;
+const TAB_POLL_TIMEOUT_MS = 5 * 60_000;
+
+export async function authorizeViaTabPoll(relayBase) {
+  const base = (String(relayBase || '').trim() || DEFAULT_RELAY_BASE).replace(/\/+$/, '');
+  if (!/^https?:\/\//.test(base)) throw new Error('Relay base URL must start with https://');
+  if (!chrome.tabs?.create) throw new Error('chrome.tabs is unavailable — reload the extension.');
+  // The relay's open-redirect guard requires a valid chromiumapp.org redirect_uri
+  // even though the tab flow delivers the token via the poll, not the redirect.
+  if (!chrome.identity?.getRedirectURL) {
+    throw new Error('chrome.identity is unavailable — reload the extension (the "identity" permission may be missing).');
+  }
+  const redirectUri = chrome.identity.getRedirectURL();
+  const pollId = randomPollId();
+  const url = `${base}/ext/authorize`
+    + `?redirect_uri=${encodeURIComponent(redirectUri)}`
+    + `&state=${encodeURIComponent(randomState())}`
+    + `&label=${encodeURIComponent(deviceLabel())}`
+    + `&poll=${encodeURIComponent(pollId)}`;
+
+  let tab;
+  try { tab = await chrome.tabs.create({ url, active: true }); }
+  catch (e) { throw new Error(`Could not open the sign-in tab (${e?.message || e}).`); }
+
+  // Best-effort early abort if the user closes the sign-in tab (Chrome may reuse
+  // tab ids eventually, but not within this 5-minute window in practice).
+  let tabClosed = false;
+  const onRemoved = (tabId) => { if (tab && tabId === tab.id) tabClosed = true; };
+  try { chrome.tabs.onRemoved.addListener(onRemoved); } catch {}
+
+  try {
+    const deadline = Date.now() + TAB_POLL_TIMEOUT_MS;
+    while (Date.now() < deadline) {
+      await sleep(TAB_POLL_INTERVAL_MS);
+      if (tabClosed) throw new Error('The sign-in tab was closed before sign-in finished — try again, or use a pairing code.');
+
+      let res;
+      try {
+        res = await fetch(`${base}/ext/authorize/wait`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ pollId }),
+        });
+      } catch { continue; }                          // transient network error — keep polling
+      // 405/501: the relay predates the tab-poll flow (or the pair_requests
+      // migration isn't applied) — fail over to the manual code path. Close the
+      // now-useless sign-in tab so an OLD relay can't finish the flow and dump a
+      // token fragment onto the chromiumapp.org placeholder page.
+      if (res.status === 405 || res.status === 501) {
+        if (tab) { try { await chrome.tabs.remove(tab.id); } catch {} }
+        throw new Error('This relay doesn’t support automatic tab sign-in yet — use “Have a pairing code instead?” below.');
+      }
+      if (!res.ok) continue;                         // 429 limiter blip / 5xx — next tick
+      let body;
+      try { body = await res.json(); } catch { continue; }
+      const deviceToken = body?.devicetoken || body?.deviceToken;
+      if (!deviceToken) continue;                    // {status:'pending'} — keep polling
+
+      const userId = body.userId || null;
+      const wssUrl = body.wssUrl || `${base.replace(/^http/, 'ws')}/ext`;
+      await persistRelayPairing({ deviceToken, base, wssUrl, userId });
+      if (tab) { try { await chrome.tabs.remove(tab.id); } catch {} }
+      return { userId, wssUrl };
+    }
+    // Timed out: nobody is polling anymore, so a late sign-in would park a token
+    // no one collects (it expires server-side) — close the tab to make that clear.
+    if (tab && !tabClosed) { try { await chrome.tabs.remove(tab.id); } catch {} }
+    throw new Error('Sign-in timed out — try again, or use a pairing code.');
+  } finally {
+    try { chrome.tabs.onRemoved.removeListener(onRemoved); } catch {}
+  }
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// 32 random bytes → base64url: a 256-bit poll key. The relay accepts ≥22 chars
+// (≥128 bits); this comfortably exceeds it.
+function randomPollId() {
+  const b = crypto.getRandomValues(new Uint8Array(32));
+  let s = '';
+  for (const x of b) s += String.fromCharCode(x);
+  return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+// Shared storage-write tail for ALL pairing paths (manual code + web-auth + tab-poll).
 // Writes the relay config and flips BOTH transports on (local broker stays up
 // for the CLI; relay runs for claude.ai). Clears any stale auth-error banner.
 async function persistRelayPairing({ deviceToken, base, wssUrl, userId }) {
