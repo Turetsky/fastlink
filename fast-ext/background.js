@@ -97,6 +97,13 @@ const NOTIFY_FLAG  = 'fastlinkNotify';      // chrome.storage.local (default off
 // up the threshold per in-flight action via stuckThreshold(), never a global.
 const STUCK_BASE_MS = 30000;                // default: in-flight longer than this → "stuck"
 const STUCK_LONG_MS = 50000;                // form / vision / long actions get more grace
+// HARD CAP, not a threshold: "stuck" is advisory (the promise may still settle),
+// but past this an entry is presumed ORPHANED — its dispatchAction promise will
+// never settle (hung CDP call, wedged capture, dead tab) — so tick() evicts it
+// and the badge/title/panel return to idle instead of climbing forever. 3 min is
+// far above any legitimate action (even LONG ones finish well under a minute).
+// A late settlement after eviction is harmless: finish() only Map.deletes by id.
+const STUCK_HARD_CAP_MS = 180000;
 const STUCK_LONG_ACTIONS = new Set([
   'fast_fill_form', 'fast_fill_vision', 'fast_fill', 'fast_do',
   'fast_scout', 'fast_locate', 'fast_point',
@@ -208,6 +215,32 @@ function stopTicker()  { if (tickTimer) { clearInterval(tickTimer); tickTimer = 
 // refreshes the live elapsed in the title, and fires stuck notifications.
 function tick() {
   spinFrame++;
+  // Hard-cap sweep BEFORE recomputing stuck: evict orphaned entries (see
+  // STUCK_HARD_CAP_MS) so they can't hold the badge/title/panel non-idle
+  // forever. The most recent eviction becomes lastDone (ok:false, timedOut)
+  // so the idle title still reads "last: X ✗". Teardown mirrors finish() in
+  // trackedDispatch: delete inflight + notifiedStuck, recompute the relay
+  // gate, onActivityChange() (badge/title/persist + stopTicker when empty),
+  // maybeNotifyDone() once the map drains.
+  const now = Date.now();
+  let evicted = null;          // latest-started evicted entry → lastDone
+  let evictedRelay = false;
+  for (const [id, e] of inflight) {
+    if (now - e.start >= STUCK_HARD_CAP_MS) {
+      inflight.delete(id);
+      notifiedStuck.delete(id);
+      if (e.transport === 'relay') evictedRelay = true;
+      if (!evicted || e.start > evicted.start) evicted = e;
+    }
+  }
+  if (evicted) {
+    lastDone = { action: evicted.action, ok: false, endedAt: now, duration: now - evicted.start, timedOut: true };
+    // No lastRelayTs bump (nothing finished) — recompute so the gate sees the
+    // entry gone; the start-time recency window has long expired by the cap.
+    if (evictedRelay) recomputeRelayActive();
+    onActivityChange();
+    if (inflight.size === 0) { maybeNotifyDone(); return; }
+  }
   const wasStuck = stuckActive;
   stuckActive = computeStuck();
   applyBadge();
