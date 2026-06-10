@@ -75,18 +75,28 @@
       background: linear-gradient(90deg, var(--fl-border), transparent);
     }
 
-    /* Calm 2-column grid within each group, generous gaps. .span-2 lets a card
-       take the full width (used for the Connection lead, Pair, and Vision).
-       Collapses to a single column on narrow widths. */
+    /* Calm 2-column masonry flow within each group, generous gaps.
+       Implemented with CSS multi-column rather than a grid: a 2-col grid with
+       auto-placement strands a cell whenever a group has an odd number of
+       uneven-height single cards (e.g. Operation's Broker + Notifications +
+       Updates), leaving a tall column beside a short one with a big void. CSS
+       columns pack cards top-to-bottom and auto-balance the column heights, so
+       there are no stranded cells. break-inside:avoid keeps each card intact;
+       margin-bottom supplies the vertical gap (column-gap supplies horizontal).
+       .span-2 spans every column for full-width cards (Connection lead, Pair,
+       Vision, Advanced). Collapses to a single column on narrow widths. */
     .group-grid {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 22px;
-      align-items: start;
+      columns: 2;
+      column-gap: 22px;
     }
-    .span-2 { grid-column: 1 / -1; }
+    .group-grid > .card {
+      break-inside: avoid;
+      margin-bottom: 22px;
+    }
+    .group-grid > .card:last-child { margin-bottom: 0; }
+    .span-2 { column-span: all; }
     @media (max-width: 860px) {
-      .group-grid { grid-template-columns: 1fr; }
+      .group-grid { columns: 1; }
     }
 
     /* ---- cards ---- */

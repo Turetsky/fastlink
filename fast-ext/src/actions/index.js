@@ -88,7 +88,11 @@ export async function dispatchAction(action, args) {
     let result = r;
     if (args?.screenshot && typeof result === 'object' && result !== null) {
       try {
-        const shot = await takeScreenshot({ format: args.screenshotFormat });
+        // Companion screenshot rides the action's result, so it must show the tab
+        // the action DROVE (the pinned/driven tab — backgrounded in relay mode),
+        // not the user's foreground tab. preferTarget keeps that pin-aware capture;
+        // only the standalone fast_screenshot tool defaults to the foreground tab.
+        const shot = await takeScreenshot({ format: args.screenshotFormat, preferTarget: true });
         if (shot?.dataUrl) result.screenshot = shot;
       } catch (e) {
         result.screenshotError = e?.message || String(e);
