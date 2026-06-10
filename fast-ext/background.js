@@ -484,10 +484,15 @@ chrome.action.onClicked.addListener(() => chrome.runtime.reload());
 // ---------------------------------------------------------------------------
 const UPDATE_ALARM = 'fastlink-update-check';
 chrome.alarms.create(UPDATE_ALARM, { periodInMinutes: 60 * 6, delayInMinutes: 1 });
-chrome.alarms.onAlarm.addListener((a) => { if (a?.name === UPDATE_ALARM) checkForUpdate(); });
+// ONLY the periodic alarm tick passes selfApply:true, so a no-click self-reload
+// can fire STRICTLY from "a periodic check found a newer version AND guards pass"
+// — never from a bare SW startup/wake/install (those call checkForUpdate() with
+// self-apply OFF). This is the structural half of the loop-safety; the circuit
+// breaker + 30-min guard in updateCheck.js are the backstops.
+chrome.alarms.onAlarm.addListener((a) => { if (a?.name === UPDATE_ALARM) checkForUpdate({ selfApply: true }); });
 chrome.runtime.onStartup.addListener(()   => { checkForUpdate(); });
 chrome.runtime.onInstalled.addListener(() => { checkForUpdate(); });
-checkForUpdate();   // first fresh-eval check; debounced, so harmless if recent
+checkForUpdate();   // first fresh-eval check; debounced + no self-apply, so harmless if recent
 
 // Choose transports from stored config. BOTH run by default once configured:
 //   • local  — on unless localEnabled === false.
@@ -916,3 +921,78 @@ function rebindOverlaysOnStartup() {
   if (!relayActiveState) clearTranscriptSurfaces();
 }
 rebindOverlaysOnStartup();
+
+// ===========================================================================
+// NO-CLICK SELF-UPDATE — startup handshake + driven-tab refresh.
+// ---------------------------------------------------------------------------
+// src/updateCheck.js may have called chrome.runtime.reload() to apply a pulled
+// update (auto-update on). That reload re-reads the on-disk files and restarts
+// THIS worker, so the only place to observe the result is on the next startup.
+// updateCheck left a `fastlinkSelfReloaded = { toVersion, at }` handshake; here
+// we consume it once:
+//   • running === toVersion → the update STUCK (disk had caught up): clear the
+//     loop guard, fire a brief "Updated to vX" notification, and refresh the
+//     tab(s) Claude is driving so the NEW content script loads into them.
+//   • running !== toVersion → disk was LAGGING the reload; just clear the
+//     handshake and let the next scheduled (≤6h) check retry. The 30-min guard
+//     in updateCheck prevents a tight reload loop in the meantime.
+// Idempotent (consumes the flag) and safe on every fresh SW evaluation, so the
+// top-level call below covers a chrome.runtime.reload() that doesn't surface as
+// onStartup/onInstalled. Placed here so TARGET_TAB_KEY / isClaudeUrl are defined.
+// ===========================================================================
+const SELF_RELOADED_KEY = 'fastlinkSelfReloaded';
+const SELF_ATTEMPT_KEY  = 'fastlinkLastSelfReloadAttempt';
+const SELF_RELOAD_LOG_KEY = 'fastlinkSelfReloadLog';   // circuit-breaker log (see updateCheck.js)
+
+// Reload the pinned/driven tab so it picks up the freshly-installed content
+// script. Only the tab Claude is actively driving (fastlink.targetTabId) — never
+// the claude.ai chat tab, and never a non-http(s) tab.
+function refreshDrivenTabs() {
+  chrome.storage.session.get(TARGET_TAB_KEY).then((o) => {
+    const t = o?.[TARGET_TAB_KEY];
+    if (typeof t !== 'number') return;
+    chrome.tabs.get(t).then((tab) => {
+      if (!tab || !/^https?:/.test(tab.url || '') || isClaudeUrl(tab.url)) return;
+      try { chrome.tabs.reload(t); } catch {}
+    }).catch(() => {});
+  }).catch(() => {});
+}
+
+function notifyUpdated(version) {
+  try {
+    if (!chrome.notifications) return;
+    chrome.notifications.create(`fastlink-updated-${version}`, {
+      type: 'basic',
+      iconUrl: chrome.runtime.getURL('icons/icon-128.png'),
+      title: 'FastLink — updated',
+      message: `Updated to v${version}.`,
+      priority: 0,
+    }, () => void chrome.runtime.lastError);
+  } catch {}
+}
+
+async function handleSelfReloadResult() {
+  try {
+    const o = await chrome.storage.local.get(SELF_RELOADED_KEY);
+    const flag = o?.[SELF_RELOADED_KEY];
+    if (!flag || !flag.toVersion) return;
+    await chrome.storage.local.remove(SELF_RELOADED_KEY);   // consume once
+    const running = chrome.runtime.getManifest().version;
+    if (running === flag.toVersion) {
+      // Success — disk had caught up and the reload STUCK (no loop). Clear the
+      // loop guard (a future update targets a new version anyway) AND the circuit-
+      // breaker log: a reload that reaches its target is a healthy update, not a
+      // loop, so it must not count toward tripping the breaker. Then notify +
+      // refresh tabs. (A reload that does NOT stick — the lag/loop case — leaves
+      // its log entry in place, so genuine loops still accumulate toward the trip.)
+      chrome.storage.local.remove([SELF_ATTEMPT_KEY, SELF_RELOAD_LOG_KEY]).catch(() => {});
+      notifyUpdated(running);
+      refreshDrivenTabs();
+    }
+    // else: disk lagged the reload — flag cleared; the next scheduled check retries.
+  } catch {}
+}
+
+chrome.runtime.onStartup.addListener(()   => { handleSelfReloadResult(); });
+chrome.runtime.onInstalled.addListener(() => { handleSelfReloadResult(); });
+handleSelfReloadResult();   // also on every fresh eval (covers chrome.runtime.reload)

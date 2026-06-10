@@ -39,6 +39,17 @@ const CONNECT_TIMEOUT_MS = 12_000;
 const STALE_MS = 50_000;
 const AUTH_FAIL_CODE = 4401;   // relay closes with this when the device token is rejected/revoked
 const DEFAULT_RELAY_BASE = 'https://relay.ytx.app';
+
+// Redact the device token from any string we log. The token rides the wss URL
+// query (`?token=…`) because browsers can't set Authorization headers on a WS
+// handshake. NEVER print the raw token: route every URL/diagnostic string that
+// could contain it through redact() first. Shows at most the first 4 chars so a
+// log is still useful for telling two tokens apart while leaking nothing usable.
+// (Note: the browser's OWN "WebSocket connection failed" console error still
+// prints the full handshake URL and cannot be intercepted from JS — see
+// docs/TOKEN-SECURITY.md for the real fix: move the token out of the URL.)
+const redact = (s) =>
+  String(s).replace(/(token=)([^&\s]+)/gi, (_, k, v) => `${k}${v.slice(0, 4)}***`);
 const VERSION = (() => { try { return chrome.runtime.getManifest().version; } catch { return '0'; } })();
 
 const ICONS = {
@@ -115,7 +126,13 @@ async function connect() {
   const url = `${cfg.wssUrl}${sep}token=${encodeURIComponent(cfg.deviceToken)}`;
 
   let ws;
-  try { ws = new WebSocket(url); } catch { scheduleReconnect(); return; }
+  // The live socket dials the REAL token in the URL; only the LOGGED string is
+  // redacted. Never log `url` directly — always wrap it in redact().
+  try { ws = new WebSocket(url); } catch (err) {
+    console.warn('[fastlink/relay] connect failed for', redact(url), err?.message || err);
+    scheduleReconnect();
+    return;
+  }
   socket = ws;
   connectStartedAt = Date.now();
   setBadgeForState('connecting');
@@ -142,7 +159,10 @@ async function connect() {
     setBadgeForState('disconnected');
     scheduleReconnect();
   };
-  ws.onerror = () => {};                              // onclose always follows; handle reconnect there
+  // onclose always follows an error, so reconnect is handled there. Log a
+  // redacted breadcrumb (never the raw URL/token) so a failed handshake is still
+  // diagnosable from the console.
+  ws.onerror = () => { console.warn('[fastlink/relay] socket error for', redact(url)); };
 }
 
 async function onMessage(ws, e) {

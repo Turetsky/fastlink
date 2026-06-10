@@ -399,6 +399,37 @@ async function renderNotifyToggle() {
 }
 
 // ---------------------------------------------------------------------------
+// Auto-apply updates (fastlinkAutoUpdate in chrome.storage.local, DEFAULT ON).
+// When on, updateCheck.js reloads the extension itself once a newer version has
+// been pulled to the unpacked folder on disk — no click. When off, FastLink only
+// shows the toolbar banner + one desktop notification (the prior behavior).
+// ---------------------------------------------------------------------------
+const AUTO_UPDATE_KEY = 'fastlinkAutoUpdate';
+// The circuit breaker (updateCheck.js) sets these if it detects a self-reload
+// loop: it HALTS auto-update so a runaway loop is impossible. Surface that here
+// and let the user re-enable (which clears the halt + the reload log).
+const HALTED_KEY      = 'fastlinkAutoUpdateHalted';
+const RELOAD_LOG_KEY  = 'fastlinkSelfReloadLog';
+
+async function renderAutoUpdateToggle() {
+  try {
+    const o = await chrome.storage.local.get([AUTO_UPDATE_KEY, HALTED_KEY]);
+    const halted = !!o?.[HALTED_KEY];
+    $('autoupdate-toggle').checked = !halted && o?.[AUTO_UPDATE_KEY] !== false;   // default ON
+    const msg = $('update-msg');
+    if (msg) {
+      if (halted) {
+        msg.textContent = 'Auto-update paused — a reload loop was detected. Update manually with “Reload extension” (About), then switch this back on to re-enable.';
+        msg.className = 'msg err';
+      } else {
+        msg.textContent = '';
+        msg.className = 'msg';
+      }
+    }
+  } catch {}
+}
+
+// ---------------------------------------------------------------------------
 // Site permissions manager (SIGNUP-SPEC §4.2). Per-origin relay consent. The
 // authoritative store is the relay; chrome.storage.local 'fastlinkConsentDecisions'
 // is a local mirror ({ [origin]: 'allow'|'readonly'|'block' }) the popup also
@@ -581,6 +612,16 @@ $('notify-toggle').addEventListener('change', (e) => {
   chrome.storage.local.set({ fastlinkNotify: !!e.target.checked }).catch(() => {});
 });
 
+$('autoupdate-toggle').addEventListener('change', (e) => {
+  const on = !!e.target.checked;
+  // Turning it back ON also clears a tripped circuit breaker (halt flag + reload
+  // log) so auto-update can resume; turning it off just records the preference.
+  const patch = on
+    ? { [AUTO_UPDATE_KEY]: true, [HALTED_KEY]: false, [RELOAD_LOG_KEY]: [] }
+    : { [AUTO_UPDATE_KEY]: false };
+  chrome.storage.local.set(patch).catch(() => {});
+});
+
 $('perm-add-btn').addEventListener('click', onAddPermission);
 $('perm-origin').addEventListener('keydown', (e) => { if (e.key === 'Enter') onAddPermission(); });
 
@@ -594,6 +635,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
     if (changes.deviceToken || changes.relayEnabled || changes.fastlinkMode) { render(); renderControls(); reflectVisionStatus(); }
     if (changes[ADVANCED_CONTROL_KEY]) renderDebugger();
     if (changes.fastlinkNotify) renderNotifyToggle();
+    if (changes[AUTO_UPDATE_KEY] || changes[HALTED_KEY]) renderAutoUpdateToggle();
     if (changes[DECISIONS_KEY] || changes.deviceToken) renderPermissions();
   }
   if (area === 'session' && changes[PAUSE_KEY]) renderControls();
@@ -612,6 +654,7 @@ async function init() {
   renderDebugger();
   renderInstallSlot();
   renderNotifyToggle();
+  renderAutoUpdateToggle();
   renderPermissions();
   reflectVisionStatus();
   // Deep-link params win over stored/default values (they reflect a fresh code).
