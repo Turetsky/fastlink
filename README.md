@@ -50,7 +50,8 @@ extension, then verify with `fast_status`.
 | Doc | Purpose |
 |---|---|
 | [`docs/INSTALL.md`](docs/INSTALL.md) | Cross-platform, Claude-executable install guide (start here). |
-| [`docs/TESTER-INSTALL.md`](docs/TESTER-INSTALL.md) | ~2-minute no-dev-tools tester install that then self-updates. |
+| [`docs/UPDATING.md`](docs/UPDATING.md) | Canonical update guide — git pull on a clone Chrome loads directly (recommended, AV-safe). |
+| [`docs/TESTER-INSTALL.md`](docs/TESTER-INSTALL.md) | ~2-minute no-dev-tools tester install (download-swap fallback) that then self-updates. |
 | [`docs/AUTO-UPDATE.md`](docs/AUTO-UPDATE.md) | How the update banner + release/pull process keeps the unpacked extension current. |
 | [`docs/TOKEN-SECURITY.md`](docs/TOKEN-SECURITY.md) | Cloud-relay device-token auth model and recommended hardening. |
 
@@ -64,8 +65,9 @@ extension, then verify with `fast_status`.
   `server/tools.js`.
 - `fast-ext/` — MV3 Chrome extension; action handlers in `src/actions/`.
 - `fastlink-relay/` — multi-tenant Cloudflare relay (deploy with `wrangler deploy`).
-- `scripts/` — install/update helpers (`install-tester.ps1`, `install-tester.sh`,
-  `pull-extension.ps1`, `update-fastlink*.ps1`, `release.sh`, `watch-sync.sh`).
+- `scripts/` — install/update helpers (`update-extension-git.ps1`/`.sh` (recommended
+  git updater), `install-tester.ps1`/`.sh` + `pull-extension.ps1`/`.sh` (no-git
+  download-swap fallback), `update-fastlink*.ps1`, `release.sh`, `watch-sync.sh`).
 - `docs/` — install + design/status docs. `bench/` — benchmark harnesses.
 
 ---

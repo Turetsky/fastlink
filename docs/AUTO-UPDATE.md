@@ -1,10 +1,16 @@
-# FastLink auto-update (Option 1: notify + pull)
+# FastLink auto-update (notify + pull)
 
 FastLink is a **self-distributed unpacked Chrome extension** plus a Node MCP
 server. It is not in the Chrome Web Store, so Chrome will never silently swap in
 a new version. Instead we do the next best thing: the extension **notices** when
 a newer version has been published and **tells you**, and a one-command updater
 **pulls** it down. This doc explains how the pieces fit together.
+
+> **The recommended update path is git.** For step-by-step setup (clone → Load
+> unpacked from the clone → `git pull`), see the canonical guide
+> **[`docs/UPDATING.md`](UPDATING.md)**. This doc covers the underlying
+> mechanics: the in-extension detector, the release process, and both the
+> primary (git) and fallback (download-swap) install methods.
 
 There are three parts:
 
@@ -82,14 +88,56 @@ first, or pass `--allow-dirty`), and refuses to reuse an existing tag.
 
 ## 3. Updating each machine
 
-After a release is out, each machine pulls it. Pick the row that matches the
-machine.
+After a release is out, each machine pulls it. The **recommended default for all
+unpacked installs (any OS)** is the git method; a no-git download-swap fallback
+and the WSL dev-box flow follow.
 
-### WSL machine (the dev box — repo in WSL, separate Windows extension copy)
+### Primary — git (recommended, AV-safe; see `docs/UPDATING.md`)
 
-Chrome loads a **mirrored copy** of `fast-ext` on the Windows side, so a pull
-alone isn't enough — the copy has to be re-synced. Use the existing WSL updater
-(run from **Windows** PowerShell, since it also restarts WSL):
+Clone the repo and **Load unpacked from the clone's `fast-ext` folder directly**
+(e.g. `C:\Users\you\fastlink\fast-ext` or `~/fastlink/fast-ext`). Because Chrome
+reads that folder in place, a `git pull` updates the extension where it already
+sits — no archive download, no atomic file-swap, no Scheduled Task. `git` is a
+signed, trusted tool, so this does **not** trip endpoint protection
+(Bitdefender / Defender / EDR). The only requirement is that **git is
+installed** (one-time; see `docs/UPDATING.md` for per-OS install).
+
+To update, run the pure-git updater:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\update-extension-git.ps1   # Windows
+```
+
+```bash
+bash scripts/update-extension-git.sh                                        # macOS / Linux
+```
+
+Both do only `git pull --ff-only` (no download, no swap, no scheduled task),
+default to the clone they live in, fail gracefully on a dirty/diverged tree, and
+take a `-Quiet` / `--quiet` flag so they drop into a login script or `claude`
+wrapper. Plain `git -C <clone> pull --ff-only` does the same. Full guide:
+**[`docs/UPDATING.md`](UPDATING.md)**.
+
+### Fallback A — download + swap (no git installed)
+
+If git can't be installed, the no-git path downloads the latest `fast-ext` and
+atomically swaps it into the loaded folder, scheduled in the background:
+
+- Setup + scheduler: `scripts/install-tester.{ps1,sh}` (see
+  `docs/TESTER-INSTALL.md`).
+- One-shot: `scripts/pull-extension.{ps1,sh}`.
+
+This works with zero developer tools, **but** the download-an-archive +
+modify-extension-folder + register-a-scheduled-task pattern is exactly what
+AV/EDR tends to block or quarantine. On a managed/AV machine, prefer the git
+method. Use this only where installing git isn't an option.
+
+### WSL dev box (repo in WSL, separate Windows extension copy)
+
+Chrome loads a **mirrored copy** of `fast-ext` on the Windows side (Chrome can't
+reliably load from a `\\wsl$\…` path), so a pull alone isn't enough — the copy
+has to be re-synced. Use the WSL updater (run from **Windows** PowerShell, since
+it also restarts WSL):
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\update-fastlink.ps1
@@ -97,29 +145,10 @@ powershell -ExecutionPolicy Bypass -File scripts\update-fastlink.ps1
 
 It pulls in WSL, `npm install`s fast-dxt if its deps changed, mirrors
 `fast-ext` → the Windows extension copy, restarts WSL, then reminds you to
-reload the extension and re-run `claude --resume`.
+reload the extension and re-run `claude --resume`. (`scripts\update-fastlink-windows.ps1`
+is the pure-Windows-no-WSL variant: it adds the npm step on top of the git pull.)
 
-### Pure-Windows machine ("dad" — no WSL)
-
-Set this up **once** so updates are trivial:
-
-- Clone the repo on Windows, and in Chrome **Load unpacked** pointing directly
-  at the repo's `fast-ext` folder (e.g. `C:\Users\dad\fastlink\fast-ext`).
-  Because Chrome reads that folder in place, a `git pull` updates the extension
-  files where they already sit — no copying needed.
-
-Then, to update:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts\update-fastlink-windows.ps1
-```
-
-It runs `git pull --ff-only` in the repo, `npm install`s fast-dxt only if its
-deps changed (best-effort — skipped if Node/npm isn't installed), and prints the
-reminders below. Pass `-RepoPath C:\path\to\fastlink` if you run it from
-somewhere other than the clone.
-
-**Then, on either machine, finish the update by hand:**
+**Then finish the update by hand:**
 
 1. Open `chrome://extensions` and click the **reload arrow** on FastLink.
 2. If the MCP server runs standalone, restart it / re-run `claude` so it picks
@@ -127,19 +156,20 @@ somewhere other than the clone.
 
 ---
 
-## The hard Chrome constraint (and the future fully-silent route)
+## The hard Chrome constraint (and the fully-silent route)
 
-Chrome **will not silently reload an unpacked extension.** There is no API for an
-extension to reinstall or hot-reload itself from disk. That's why every path
-above ends in a manual "reload at `chrome://extensions`." This is a Chrome
-security boundary, not a FastLink limitation — Option 1 (notify + pull + manual
-reload) is the most automation we can get for unpacked, self-distributed
-extensions.
+Chrome **will not silently reload an unpacked extension** on command. There is no
+API for an extension to reinstall or hot-reload itself from disk on demand.
+That's why every path above ends in a manual "reload at `chrome://extensions`"
+(or waits for the version-bump self-reload). This is a Chrome security boundary,
+not a FastLink limitation — notify + pull + reload is the most automation we can
+get for unpacked, self-distributed extensions.
 
-For machines where even that manual reload is unacceptable (e.g. a locked-down
-or managed PC), the future **Option 2** is a **signed `.crx` hosted with an
+For users who shouldn't run Developer-mode unpacked extensions at all, or
+hyper-locked corporate policies that block unpacked extensions entirely, the
+**Fallback B (enterprise / Web Store)** route is a **signed `.crx` hosted with an
 `update_url` in the manifest**, installed via **enterprise policy**
-(`ExtensionInstallForcelist`). Chrome then updates that extension silently on its
-own schedule — no banner, no reload. That's a heavier setup (signing key, hosted
-update XML, policy on the machine) and is out of scope here; this doc covers
-Option 1.
+(`ExtensionInstallForcelist`), or a Chrome Web Store listing (TBD). Chrome then
+updates that extension silently on its own schedule — no banner, no reload.
+That's a heavier setup (signing key, hosted update XML, policy on the machine)
+and is out of scope here; this doc covers the unpacked notify + pull flow.

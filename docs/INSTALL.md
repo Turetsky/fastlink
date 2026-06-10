@@ -190,13 +190,25 @@ refresh.
 > **Managed / corporate machines** may block unpacked extensions by policy
 > (`BlockExternalExtensions`, no Developer mode). On those, Load-unpacked will fail — the path
 > forward is the Chrome Web Store listing (TBD) or an enterprise force-install policy
-> (`ExtensionInstallForcelist` with a signed `.crx`). See `docs/AUTO-UPDATE.md` "Option 2".
+> (`ExtensionInstallForcelist` with a signed `.crx`). See `docs/AUTO-UPDATE.md` "Fallback B
+> (enterprise / Web Store)".
 
-### 5b. Auto-updater (keeps the folder current with zero clicks afterward)
+### 5b. Keep the folder current
 
-Run the installer for the detected OS. It downloads the current extension into the target folder
-and schedules a background pull so it stays current; the extension then notices the new version
-and reloads itself. (Details: `docs/TESTER-INSTALL.md`, `docs/AUTO-UPDATE.md`.)
+**Recommended (any OS): git.** If you cloned the repo in Step 2 and loaded
+unpacked from its `fast-ext/` folder (5a), keep it current with a plain `git pull`
+(or the pure-git wrapper `scripts/update-extension-git.ps1` / `.sh`). The pull
+updates the extension in place — no download, no file-swap, no scheduled task — so
+it's AV-safe (doesn't trip Bitdefender/Defender/EDR) and the extension self-reloads
+on the next release version bump. This is the canonical path: see
+**`docs/UPDATING.md`**. Requirement: git installed (one-time).
+
+**Fallback (no git): download-swap auto-updater.** Run the installer for the
+detected OS. It downloads the current extension into the target folder and
+schedules a background pull so it stays current; the extension then notices the
+new version and reloads itself. (Details: `docs/TESTER-INSTALL.md`,
+`docs/AUTO-UPDATE.md`.) Note this download + modify-extension + scheduled-task
+pattern can trip AV/EDR on managed machines — prefer the git path there.
 
 - **Windows (native or for the WSL Windows-side copy):**
 
