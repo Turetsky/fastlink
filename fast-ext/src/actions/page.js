@@ -829,14 +829,24 @@ const serializeSnapshot = async (viewportOnly, opts) => {
     const w = Math.round(rect.width);
     const h = Math.round(rect.height);
     if (entry.kind === 'click') {
-      items.push({
-        i: entry.id, tag: entry.tag, role: entry.role,
-        text: entry.text, innerText: entry.innerText, label: entry.label,
-        href: entry.href, placeholder: entry.placeholder, ariaLabel: entry.ariaLabel,
-        describedBy: entry.describedBy, title: entry.title, type: entry.type, name: entry.name,
-        x, y, w, h, inFrame: off.inFrame || undefined,
-        inOverlay: (overlayEls && overlayEls.has(el)) || undefined,
-      });
+      // Emit only keys that carry a meaningful value — null/undefined/empty-string
+      // fields are dropped entirely (roughly halves the payload with zero info
+      // loss; every consumer reads `it.X && …` / `(it.X || '')`, so absent and
+      // null are equivalent to them). i, tag, text and geometry are always kept.
+      const item = { i: entry.id, tag: entry.tag, text: entry.text, x, y, w, h };
+      if (entry.role)        item.role = entry.role;
+      if (entry.innerText)   item.innerText = entry.innerText;
+      if (entry.label)       item.label = entry.label;
+      if (entry.href)        item.href = entry.href;
+      if (entry.name)        item.name = entry.name;
+      if (entry.placeholder) item.placeholder = entry.placeholder;
+      if (entry.ariaLabel)   item.ariaLabel = entry.ariaLabel;
+      if (entry.describedBy) item.describedBy = entry.describedBy;
+      if (entry.title)       item.title = entry.title;
+      if (entry.type)        item.type = entry.type;
+      if (off.inFrame)       item.inFrame = true;
+      if (overlayEls && overlayEls.has(el)) item.inOverlay = true;
+      items.push(item);
     } else {
       content.push({ tag: entry.tag, text: entry.text, x, y, w, h, inFrame: off.inFrame || undefined });
     }
@@ -859,6 +869,59 @@ const serializeSnapshot = async (viewportOnly, opts) => {
     capped: INDEX.capped || undefined,
     snapshotTimedOut: timedOut || undefined,
   };
+};
+
+// ─────────────────────── output trimming (rank + cap) ───────────────────────
+// serializeSnapshot returns the FULL index (every matchable element) — that's
+// what the internal fast_click/fast_fill match walks consume. capSnapshot is
+// applied ONLY to the snapshot handed back to the model: it RANKS items so
+// interactive controls + on-screen / above-the-fold elements come first and the
+// long tail (dozens of footer/nav links far down the page) comes last, then CAPS
+// to keep the payload small. A `truncated` count tells the model more exist;
+// fast_snapshot's `full`/`limit` args bypass the cap for the complete set.
+const ITEM_CAP_DEFAULT    = 70;   // explicit fast_snapshot default
+const CONTENT_CAP_DEFAULT = 30;   // content text array default
+const AUTO_ITEM_CAP       = 30;   // action-result preview snapshot (tighter)
+const AUTO_CONTENT_CAP    = 15;
+const RANK_INTERACTIVE_TAGS  = new Set(['input', 'button', 'select', 'textarea']);
+const RANK_INTERACTIVE_ROLES = new Set([
+  'button', 'link', 'checkbox', 'radio', 'option', 'menuitem', 'tab',
+  'combobox', 'switch', 'textbox',
+]);
+const rankItemScore = (it, vh, vw) => {
+  let r = 0;
+  if (it.inOverlay) r += 1000;                              // open menu/dropdown items: always first
+  if (RANK_INTERACTIVE_TAGS.has(it.tag)) r += 100;
+  else if (it.tag === 'a' && it.text) r += 40;
+  if (RANK_INTERACTIVE_ROLES.has((it.role || '').toLowerCase())) r += 50;
+  const onScreen = it.y >= 0 && it.y <= vh && it.x >= 0 && it.x <= vw;
+  if (onScreen) r += 60;                                     // in-viewport
+  else if (it.y >= 0 && it.y < vh) r += 30;                  // above-the-fold-ish
+  if (it.y > vh * 3) r -= 20;                                // deep long tail (footers)
+  return r;
+};
+// Rank → keep top N (in rank order, so interactive/on-screen lead) → set a
+// `truncated` count when items were dropped. Mutates and returns `snap`.
+const capSnapshot = (snap, itemCap, contentCap) => {
+  if (!snap || typeof snap !== 'object') return snap;
+  const vh = window.innerHeight, vw = window.innerWidth;
+  if (Array.isArray(snap.items) && itemCap >= 0 && snap.items.length > itemCap) {
+    const ranked = snap.items
+      .map((it, idx) => ({ it, idx, s: rankItemScore(it, vh, vw) }))
+      .sort((a, b) => (b.s - a.s) || (a.idx - b.idx));
+    snap.truncated = snap.items.length - itemCap;
+    snap.items = ranked.slice(0, itemCap).map((x) => x.it);
+    snap.count = snap.items.length;
+  }
+  if (Array.isArray(snap.content) && contentCap >= 0 && snap.content.length > contentCap) {
+    const ranked = snap.content
+      .map((c, idx) => ({ c, idx, s: (c.y >= 0 && c.y <= vh ? 100 : 0) - (c.y > vh * 3 ? 20 : 0) }))
+      .sort((a, b) => (b.s - a.s) || (a.idx - b.idx));
+    snap.contentTruncated = snap.content.length - contentCap;
+    snap.content = ranked.slice(0, contentCap).map((x) => x.c);
+    snap.contentCount = snap.content.length;
+  }
+  return snap;
 };
 
 // Look up an element by snapshot id. Stable for the page's lifetime.
@@ -988,7 +1051,13 @@ async function runPageAction(action, args) {
         const inView = (it) => !!it.inOverlay || !(it.y + it.h < 0 || it.y > vh || it.x + it.w < 0 || it.x > vw);
         const items = preSnap.items.filter(inView);
         const content = Array.isArray(preSnap.content) ? preSnap.content.filter(inView) : [];
-        result.snapshot = { ...preSnap, count: items.length, items, contentCount: content.length, content };
+        // Action-result snapshot is a compact convenience preview — cap it
+        // tighter than an explicit fast_snapshot (the caller can always issue a
+        // full fast_snapshot for the complete set).
+        result.snapshot = capSnapshot(
+          { ...preSnap, count: items.length, items, contentCount: content.length, content },
+          AUTO_ITEM_CAP, AUTO_CONTENT_CAP,
+        );
         if (preSnap.snapshotTimedOut || preSnap.partial || preSnap.capped) {
           result.snapshotPartial = true;
           if (preSnap.snapshotTimedOut) result.snapshotTimedOut = true;
@@ -1012,6 +1081,8 @@ async function runPageAction(action, args) {
       // indexMs is bounded too so the auto-snapshot returns within a couple
       // seconds (partial is fine — the action already succeeded).
       const snap = await serializeSnapshot(true, { budgetMs: 2000, drainMs: 30, indexMs: 1500 });
+      // Compact preview cap (tighter than an explicit fast_snapshot).
+      capSnapshot(snap, AUTO_ITEM_CAP, AUTO_CONTENT_CAP);
       result.snapshot = snap;
       if (snap && (snap.snapshotTimedOut || snap.partial || snap.capped)) {
         result.snapshotPartial = true;
@@ -1231,7 +1302,12 @@ async function runPageAction(action, args) {
   };
 
   if (action === 'fast_snapshot') {
-    return await serializeSnapshot(!!args.viewport, { overlay: !!args.overlay });
+    const snap = await serializeSnapshot(!!args.viewport, { overlay: !!args.overlay });
+    // full:true → the complete, uncapped set. Otherwise rank + cap (interactive /
+    // on-screen first); `limit` overrides the default item cap.
+    if (args.full) return snap;
+    const itemCap = (typeof args.limit === 'number' && args.limit >= 0) ? args.limit : ITEM_CAP_DEFAULT;
+    return capSnapshot(snap, itemCap, CONTENT_CAP_DEFAULT);
   }
 
   if (action === 'fast_wait') {
@@ -1889,11 +1965,31 @@ async function runPageAction(action, args) {
         const r = results[vf.match];
         if (!r) continue;
         try {
-          const current = readValue(vf.el);
-          const stuck = vf.append ? (current != null && current.endsWith(vf.expected))
-                                  : (current === vf.expected);
-          if (!stuck) { r.reverted = true; r.currentValue = current; }
-          r.verified = true;
+          // Native <select>: the fill matched the requested value against option
+          // TEXT *or* VALUE (see fillItem), so the .value we store can legitimately
+          // differ from the requested text (Country="Australia" → value "AU").
+          // Verify against the SELECTED option's text OR value, mirroring that
+          // match — comparing raw .value to the requested text falsely flagged a
+          // correctly-selected option as reverted. Only a select whose selected
+          // option matches NEITHER (genuine reset to placeholder) is reverted.
+          const isSelect = (r.kind === 'native-select') || (vf.el && vf.el.tagName === 'SELECT');
+          if (isSelect) {
+            const opt = vf.el.selectedOptions ? vf.el.selectedOptions[0] : vf.el.options[vf.el.selectedIndex];
+            const want = vf.expected.toLowerCase();
+            const stuck = !!opt && (
+              (opt.text || '').trim().toLowerCase() === want ||
+              (opt.value || '').toLowerCase() === want
+            );
+            r.currentValue = vf.el.value;
+            if (!stuck) r.reverted = true;
+            r.verified = true;
+          } else {
+            const current = readValue(vf.el);
+            const stuck = vf.append ? (current != null && current.endsWith(vf.expected))
+                                    : (current === vf.expected);
+            if (!stuck) { r.reverted = true; r.currentValue = current; }
+            r.verified = true;
+          }
         } catch (e) {
           r.verified = false;
           r.verifyError = (e?.message || String(e)).slice(0, 200);
