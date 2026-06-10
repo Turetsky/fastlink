@@ -781,7 +781,9 @@ async function handleDo(args) {
   });
 
   // 3. Locate every step that needs a coordinate (click/type) in ONE vision call.
-  const locatable = steps.filter((s) => s.action !== 'key' && s.target);
+  //    'select' steps are routed through fast_select_option (DOM-based, no
+  //    coordinate) so they are excluded here — same as 'key'.
+  const locatable = steps.filter((s) => s.action !== 'key' && s.action !== 'select' && s.target);
   const targets = locatable.map((s) => s.target);
   let points = [];
   if (targets.length) {
@@ -810,6 +812,21 @@ async function handleDo(args) {
       const key = s.value || 'Enter';
       await callExtension('fast_key_press', { key });
       executed.push({ action: 'key', value: key });
+      continue;
+    }
+    if (s.action === 'select') {
+      // Dropdown/select pick: route through fast_select_option, which resolves
+      // the field + option by DOM (piercing shadow roots, handling native
+      // <select> whose open list is an OS popup that synthetic clicks miss —
+      // GitHub #1 finding #1). No vision coordinate needed, so this is also
+      // not in `locatable` and must NOT advance locIdx.
+      const res = await callExtension('fast_select_option', { field: s.target, option: String(s.value ?? '') });
+      const r = res?.result || {};
+      if (res?.error || r.error) {
+        skipped.push({ action: 'select', target: s.target, value: String(s.value ?? ''), reason: res?.error || r.error });
+      } else {
+        executed.push({ action: 'select', target: s.target, value: String(s.value ?? ''), picked: r.picked, kind: r.kind });
+      }
       continue;
     }
     const coord = coordByTargetIdx.get(locIdx);

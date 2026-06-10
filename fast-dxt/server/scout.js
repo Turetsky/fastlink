@@ -477,22 +477,27 @@ export async function planByImage({ intent, base64 }) {
     'precisely enough that it can be located in this screenshot.',
     'Each step is one of:',
     '- {"action":"type","target":"<description of the input field>","value":"<text to enter>"}',
-    '- {"action":"click","target":"<description of the control to click, e.g. a dropdown, radio, checkbox, tab>"}',
+    '- {"action":"click","target":"<description of the control to click, e.g. a radio, checkbox, tab, button>"}',
+    '- {"action":"select","target":"<description of the dropdown/select field>","value":"<the option text to choose>"}',
     '- {"action":"key","value":"<a single key like Enter or Tab>"} (use sparingly, e.g. to confirm a typed dropdown entry)',
     'Rules:',
     '- Order steps top-to-bottom as a human would fill the form.',
     '- For "type" steps, target the empty input box (its middle), not its label.',
     '- Only include fields the intent actually specifies a value for. Do NOT',
     '  invent values for fields the user did not mention.',
-    '- To pick from a dropdown/select, emit a click on the dropdown, then a click',
-    '  on the option (describe the option text). If the option is not yet visible,',
-    '  still describe it; unfound steps are skipped.',
+    '- To pick a value from ANY dropdown/select/combobox (native <select>, a',
+    '  custom react-select, an Angular-Material / web-component menu, etc.), emit',
+    '  a SINGLE {"action":"select","target":"<the dropdown field/label>","value":"<option text>"}',
+    '  step. Do NOT emit a click-the-dropdown-then-click-the-option pair for',
+    '  selecting a value — the select action handles opening and choosing by DOM',
+    '  (it works even when the open option list is a native OS popup that synthetic',
+    '  clicks cannot hit). Use plain "click" only for non-select controls.',
     'CRITICAL SAFETY: Do NOT emit a final submit/create/save/delete/confirm/',
     'continue button click that would COMMIT the form, UNLESS the intent EXPLICITLY',
     'asks to submit/create/save it. Default to filling the form and stopping. If',
     'you deliberately omitted a submit step, mention it in "note".',
     'INTENT: ' + String(intent || ''),
-    'Reply with strict JSON: {"steps":[{"action":"click"|"type"|"key","target":string,"value":string}],"note":string}.',
+    'Reply with strict JSON: {"steps":[{"action":"click"|"type"|"select"|"key","target":string,"value":string}],"note":string}.',
   ].join(' ');
   const out = await callModelParts({
     parts: [{ text: prompt }, { inlineData: { mimeType: 'image/png', data: img } }],
@@ -502,13 +507,14 @@ export async function planByImage({ intent, base64 }) {
   const steps = raw.map((s) => {
     if (!s || typeof s !== 'object') return null;
     let action = typeof s.action === 'string' ? s.action.toLowerCase().trim() : '';
-    if (!['click', 'type', 'key'].includes(action)) {
+    if (!['click', 'type', 'select', 'key'].includes(action)) {
       // Infer: a value with no key-like name → type; otherwise click.
       action = s.value != null && String(s.value).length ? 'type' : 'click';
     }
     const target = typeof s.target === 'string' ? s.target.trim() : '';
     const value = s.value != null ? String(s.value) : undefined;
-    if (action !== 'key' && !target) return null; // click/type need a target
+    if (action !== 'key' && !target) return null; // click/type/select need a target
+    if (action === 'select' && (value == null || !value.length)) return null; // select needs an option value
     return prune({ action, target: target || undefined, value });
   }).filter(Boolean);
   return { steps, note: (out && typeof out.note === 'string') ? out.note : undefined };

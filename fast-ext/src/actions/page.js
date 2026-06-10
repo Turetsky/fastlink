@@ -1196,19 +1196,23 @@ async function runPageAction(action, args) {
                   || all.find(o => (o.value || '').toLowerCase() === v.toLowerCase());
       if (!target) return { error: 'option not found in <select>', available: all.map(o => o.text) };
       el.value = target.value;
-      el.dispatchEvent(new Event('input', { bubbles: true }));
-      el.dispatchEvent(new Event('change', { bubbles: true }));
+      // composed:true so the input/change cross any shadow boundary — a web-
+      // component / Angular-Material control whose validator listens OUTSIDE the
+      // select's shadow root only revalidates if the event escapes it.
+      el.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
       return { filled: { tag: found.tag, label: found.label, name: found.name }, valueSet: target.text, kind: 'native-select' };
     }
     if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
       const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
       const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
       setter.call(el, append ? (el.value + v) : v); // v==="" -> empties the field
-      el.dispatchEvent(new Event('input', { bubbles: true }));
-      el.dispatchEvent(new Event('change', { bubbles: true }));
+      // composed:true so validators across a shadow boundary still see input/change.
+      el.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
     } else {
       el.innerText = append ? (el.innerText + v) : v; // contenteditable: "" clears
-      el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: v }));
+      el.dispatchEvent(new InputEvent('input', { bubbles: true, composed: true, inputType: 'insertText', data: v }));
     }
     return { filled: { tag: found.tag, label: found.label, placeholder: found.placeholder, name: found.name }, valueSet: v };
   };
@@ -1491,7 +1495,10 @@ async function runPageAction(action, args) {
                     || all.find(o => (o.value || '').toLowerCase() === optionText.toLowerCase());
         if (!target) return { error: 'option not found in <select>', available: all.map(o => o.text) };
         field.value = target.value;
-        field.dispatchEvent(new Event('change', { bubbles: true }));
+        // composed:true so a validator listening OUTSIDE the select's shadow root
+        // (web-component / Angular-Material composite control) revalidates — a
+        // non-composed change does not cross the shadow boundary (GitHub #1).
+        field.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
         return { picked: target.text, kind: 'native-select' };
       }
 
@@ -1504,7 +1511,7 @@ async function runPageAction(action, args) {
           input.focus();
           const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
           setter.call(input, optionText);
-          input.dispatchEvent(new Event('input', { bubbles: true }));
+          input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
           await wait(400);
         }
         const listboxId = input?.id ? input.id.replace('-input', '-listbox') : null;
@@ -1514,8 +1521,8 @@ async function runPageAction(action, args) {
         if (!target) {
           return { error: 'no matching option in react-select', tried: optionText, available: opts.slice(0, 10).map(o => (o.textContent || '').trim()) };
         }
-        target.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
-        target.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+        target.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, composed: true }));
+        target.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, composed: true }));
         target.click();
         await wait(250);
         return { picked: (target.textContent || '').trim(), kind: 'react-select' };

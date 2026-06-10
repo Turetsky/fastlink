@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>FastLink Dropdown Test</title>
+<style>
+  body { font: 16px system-ui, sans-serif; max-width: 640px; margin: 40px auto; padding: 0 20px; }
+  h1 { font-size: 22px; }
+  .row { margin: 14px 0; display: flex; align-items: center; gap: 12px; }
+  label { width: 170px; font-weight: 600; }
+  select, input { flex: 1; padding: 8px; font-size: 15px; }
+  #out { margin-top: 24px; padding: 12px; background: #f3f4f6; border-radius: 8px; white-space: pre-wrap; font-family: monospace; font-size: 13px; }
+</style>
+</head>
+<body>
+<h1>FastLink — many-dropdown test</h1>
+<form id="f">
+  <div class="row"><label for="title">Title</label>
+    <select id="title" name="title"><option value="">--</option><option>Mr</option><option>Mrs</option><option>Ms</option><option>Dr</option><option>Prof</option></select></div>
+
+  <div class="row"><label for="country">Country</label>
+    <select id="country" name="country"><option value="">--</option><option>United States</option><option>Canada</option><option>United Kingdom</option><option>Australia</option><option>Germany</option><option>Japan</option></select></div>
+
+  <div class="row"><label for="state">State / Province</label>
+    <select id="state" name="state"><option value="">--</option><option>California</option><option>New York</option><option>Texas</option><option>Florida</option><option>Ontario</option><option>Quebec</option></select></div>
+
+  <div class="row"><label for="language">Language</label>
+    <select id="language" name="language"><option value="">--</option><option>English</option><option>Spanish</option><option>French</option><option>German</option><option>Japanese</option></select></div>
+
+  <div class="row"><label for="currency">Currency</label>
+    <select id="currency" name="currency"><option value="">--</option><option>USD</option><option>EUR</option><option>GBP</option><option>CAD</option><option>JPY</option></select></div>
+
+  <div class="row"><label for="timezone">Timezone</label>
+    <select id="timezone" name="timezone"><option value="">--</option><option>Pacific</option><option>Mountain</option><option>Central</option><option>Eastern</option><option>GMT</option></select></div>
+
+  <div class="row"><label for="department">Department</label>
+    <select id="department" name="department"><option value="">--</option><option>Sales</option><option>Engineering</option><option>Marketing</option><option>Human Resources</option><option>Finance</option></select></div>
+
+  <div class="row"><label for="plan">Plan</label>
+    <select id="plan" name="plan"><option value="">--</option><option>Free</option><option>Starter</option><option>Pro</option><option>Enterprise</option></select></div>
+
+  <div class="row"><label for="fullname">Full Name</label>
+    <input id="fullname" name="fullname" type="text" placeholder="Full Name"></div>
+
+  <div class="row"><label for="email">Email</label>
+    <input id="email" name="email" type="email" placeholder="Email"></div>
+</form>
+
+<div id="out">Current selections will mirror here.</div>
+<script>
+  // Mirror live values + count change events so we can confirm change fired on each select.
+  const out = document.getElementById('out');
+  const changes = {};
+  const render = () => {
+    const data = {};
+    document.querySelectorAll('select, input').forEach(el => { data[el.name] = el.value; });
+    out.textContent = JSON.stringify({ values: data, changeEvents: changes }, null, 2);
+  };
+  document.querySelectorAll('select, input').forEach(el => {
+    el.addEventListener('change', () => { changes[el.name] = (changes[el.name] || 0) + 1; render(); });
+    el.addEventListener('input', render);
+  });
+  render();
+</script>
+</body>
+</html>
