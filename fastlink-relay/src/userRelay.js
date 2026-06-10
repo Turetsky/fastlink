@@ -231,7 +231,7 @@ export class UserRelay extends DurableObject {
       this._prewarm.at = nowMs;
       if (url) this._prewarm.url = url;
 
-      const snap = await this.callExtension('fast_snapshot', { viewport: true });
+      const snap = await this.callExtension('fast_snapshot', { viewport: true, __prewarm: true });
       const digest = snap?.result;
       if (digest && Array.isArray(digest.items) && digest.items.length) {
         if (typeof digest.url === 'string') this._prewarm.url = digest.url;

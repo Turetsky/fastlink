@@ -77,12 +77,15 @@ export async function dispatchAction(action, args) {
     return await withOrigin({ error: 'Paused by the user — driving is stopped. Resume it from the FastLink popup to continue.' });
   }
   const evtId = ++__evtSeq;
-  notifyOverlay({ phase: 'start', id: evtId, action, args });
+  // Server-initiated prewarm reads (page pre-read on navigation) are NOT Claude
+  // driving — flag them so the overlay shows a subtle dot, not the full panel.
+  const prewarm = !!(args && args.__prewarm);
+  notifyOverlay({ phase: 'start', id: evtId, action, args, prewarm });
   try {
     const r = await runOne(action, args);
     // Pass error payloads through whole — diagnostics/available/etc. must survive to the LLM.
     if (r && typeof r === 'object' && 'error' in r && r.error !== undefined) {
-      notifyOverlay({ phase: 'end', id: evtId, ok: false, error: r.error });
+      notifyOverlay({ phase: 'end', id: evtId, ok: false, error: r.error, prewarm });
       return await withOrigin(r);
     }
     let result = r;
@@ -98,11 +101,11 @@ export async function dispatchAction(action, args) {
         result.screenshotError = e?.message || String(e);
       }
     }
-    notifyOverlay({ phase: 'end', id: evtId, ok: true });
+    notifyOverlay({ phase: 'end', id: evtId, ok: true, prewarm });
     return await withOrigin({ result });
   } catch (e) {
     const msg = e?.message || String(e);
-    notifyOverlay({ phase: 'end', id: evtId, ok: false, error: msg });
+    notifyOverlay({ phase: 'end', id: evtId, ok: false, error: msg, prewarm });
     return await withOrigin({ error: msg });
   }
 }

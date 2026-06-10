@@ -311,7 +311,9 @@ export async function prewarmScout() {
   prewarmInFlight = true;
   try {
     // Warm the BASIC (viewport) tier — that's what the first real scout reads.
-    const snap = await callExtension('fast_snapshot', { viewport: true });
+    // __prewarm tells the extension this is a background pre-read, not Claude
+    // acting — the overlay shows a subtle dot instead of the full driving panel.
+    const snap = await callExtension('fast_snapshot', { viewport: true, __prewarm: true });
     const digest = snap?.result;
     if (digest && Array.isArray(digest.items)) await warmScout(digest);
   } catch {
@@ -364,7 +366,7 @@ async function runVisionWarm(doVisualMap) {
   visionWarmInFlight = true;
   const url = pendingWarmUrl;
   try {
-    const cap = await callExtension('fast_vision_capture', {});
+    const cap = await callExtension('fast_vision_capture', { __prewarm: true });
     const full = cap?.result;
     // Capture can legitimately fail right after nav (readback) — skip, no throw.
     if (cap?.error || !full?.dataUrl) return;

@@ -90,6 +90,58 @@
   const humanVerb = (action) =>
     VERB[action] || String(action || '').replace(/^fast_/, '').replace(/_/g, ' ') || 'Working';
 
+  // ---- prewarm mini-indicator -----------------------------------------------
+  // Server-initiated pre-warm reads (snapshot/vision capture fired on navigation
+  // to warm the scout cache) are NOT Claude driving the tab — mounting the full
+  // "Claude is driving this tab" panel for them reads as phantom control. They
+  // get a tiny dim pulsing dot instead. If the full panel is already up (real
+  // tools running), the dot is skipped — the panel already signals activity.
+  const PW_DOT_ID = '__fastlink_prewarm_dot__';
+  const PW_LINGER_MS = 1200;   // dot lingers this long after the last prewarm ends
+  const PW_MAX_MS = 15000;     // safety: a lost 'end' never leaves the dot stuck
+  let pwHost = null;
+  let pwTimer = null;          // pending removal (linger or safety)
+  const pwActive = new Set();  // outstanding prewarm event ids
+
+  const removePrewarmDot = () => {
+    if (pwTimer) { clearTimeout(pwTimer); pwTimer = null; }
+    try { pwHost?.remove(); } catch {}
+    pwHost = null;
+    pwActive.clear();
+  };
+  const showPrewarmDot = () => {
+    if (host && document.documentElement.contains(host)) return; // full panel up
+    if (pwHost && document.documentElement.contains(pwHost)) return;
+    pwHost = document.createElement('div');
+    pwHost.id = PW_DOT_ID;
+    pwHost.title = 'FastLink is pre-reading this page (prewarm)';
+    pwHost.style.cssText =
+      'all:initial;position:fixed;top:14px;right:14px;width:9px;height:9px;' +
+      'border-radius:50%;background:#F5AE3C;opacity:0.4;' +
+      'box-shadow:0 0 5px rgba(245,174,60,0.5);z-index:2147483647;pointer-events:auto;';
+    try {
+      pwHost.animate(
+        [{ opacity: 0.2 }, { opacity: 0.5 }, { opacity: 0.2 }],
+        { duration: 1600, iterations: Infinity },
+      );
+    } catch {}
+    document.documentElement.appendChild(pwHost);
+  };
+  const onPrewarmEvent = (msg) => {
+    if (msg.phase === 'start') {
+      pwActive.add(msg.id);
+      showPrewarmDot();
+      if (pwTimer) clearTimeout(pwTimer);
+      pwTimer = setTimeout(removePrewarmDot, PW_MAX_MS);
+    } else if (msg.phase === 'end') {
+      pwActive.delete(msg.id);
+      if (!pwActive.size) {
+        if (pwTimer) clearTimeout(pwTimer);
+        pwTimer = setTimeout(removePrewarmDot, PW_LINGER_MS);
+      }
+    }
+  };
+
   const ensureMounted = () => {
     if (host && document.documentElement.contains(host)) return;
     host = document.createElement('div');
@@ -506,6 +558,7 @@
     lastMsgAt = performance.now();
     if (staleNeutral) { staleNeutral = false; updateStatus(); }
     if (msg.phase === 'heartbeat') return;       // liveness ping only — no row
+    if (msg.prewarm) { onPrewarmEvent(msg); return; }  // background pre-read → dot, not panel
     if (msg.phase === 'start') ensureRow(msg.id, msg.action, msg.args);
     else if (msg.phase === 'end') completeRow(msg.id, msg.ok, msg.error);
   };
@@ -519,6 +572,7 @@
       try { entry.rowEl.remove(); } catch {}
     }
     rows.clear();
+    removePrewarmDot();
     transcriptActive = false;
     tData = null;
     tActivity = null;
@@ -587,6 +641,7 @@
   // Allow a future re-injection to cleanly replace this instance.
   window.__fastlinkOverlayTeardown = () => {
     try { cancelDismiss(); } catch {}
+    try { removePrewarmDot(); } catch {}
     try { clearInterval(ctxWatch); } catch {}
     try { clearInterval(staleWatch); } catch {}
     try { chrome.runtime.onMessage.removeListener(onMessage); } catch {}
