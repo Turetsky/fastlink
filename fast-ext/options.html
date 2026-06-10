@@ -401,21 +401,7 @@
       </div>
     </div>
 
-      <!-- 4. BROKER SLOT -->
-      <div class="card" id="install-card">
-      <h2>Broker slot <span class="badge fine" style="font-weight:400;">optional</span></h2>
-      <p class="desc">You can skip this unless you use FastLink in <strong>two Chrome profiles</strong> on this computer. FastLink and Claude talk over a local connection on this machine, and two profiles can't share the same one — so each profile gets its own slot. Keep this profile on <strong>Primary</strong>; in the second profile's FastLink settings, choose <strong>Secondary</strong> (the slots use ports 9876 and 9877).</p>
-      <label for="install-select">This browser's slot</label>
-      <select id="install-select">
-        <option value="primary">Primary (default · port 9876)</option>
-        <option value="secondary">Secondary (2nd Chrome profile · port 9877)</option>
-      </select>
-      <div class="row">
-        <span class="fine" id="install-detail">Switching reloads FastLink so it reconnects on the new slot.</span>
-      </div>
-    </div>
-
-      <!-- 5. NOTIFICATIONS -->
+      <!-- 4. NOTIFICATIONS -->
       <div class="card" id="notify-card">
       <h2>Notifications</h2>
       <p class="desc">Get a desktop alert when Claude finishes a task or appears to be stuck, so you don't have to watch the tab.</p>
@@ -427,7 +413,7 @@
       </label>
     </div>
 
-      <!-- 5b. UPDATES -->
+      <!-- 5. UPDATES -->
       <div class="card" id="update-card">
       <h2>Updates</h2>
       <p class="desc">FastLink checks GitHub for new versions every few hours. When auto-apply is on, it reloads itself to the new version automatically as soon as it's available — no clicking required. Turn it off to just get the toolbar banner and a notification instead.</p>
@@ -438,6 +424,20 @@
         </span>
       </label>
       <div id="update-msg" class="msg"></div>
+    </div>
+
+      <!-- 6. BROKER SLOT -->
+      <div class="card" id="install-card">
+      <h2>Broker slot <span class="badge fine" style="font-weight:400;">2-profile setups</span></h2>
+      <p class="desc"><strong>Running FastLink in a second Chrome profile on this computer?</strong> Then this setting is for you — without it, the two profiles fight over the same local connection between FastLink and Claude. Each profile needs its own slot: keep this profile on <strong>Primary</strong>, and in the second profile's FastLink settings choose <strong>Secondary</strong> (the slots use ports 9876 and 9877). Using just one profile? Leave this alone.</p>
+      <label for="install-select">This browser's slot</label>
+      <select id="install-select">
+        <option value="primary">Primary (default · port 9876)</option>
+        <option value="secondary">Secondary (2nd Chrome profile · port 9877)</option>
+      </select>
+      <div class="row">
+        <span class="fine" id="install-detail">Switching reloads FastLink so it reconnects on the new slot.</span>
+      </div>
     </div>
 
     </section>
