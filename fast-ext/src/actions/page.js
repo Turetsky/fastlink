@@ -1052,7 +1052,10 @@ async function runPageAction(action, args) {
   };
 
   const isFillable = (it) => {
-    if (it.tag === 'input' || it.tag === 'textarea') return true;
+    // Native <select> is fillable: fillItem matches the value against option
+    // text/value and sets it. Lets fast_fill / fast_fill_form set native
+    // dropdowns alongside text inputs in one call.
+    if (it.tag === 'input' || it.tag === 'textarea' || it.tag === 'select') return true;
     const el = elAt(it);
     return el ? (el.isContentEditable || el.getAttribute('role') === 'textbox') : false;
   };
@@ -1113,6 +1116,19 @@ async function runPageAction(action, args) {
     const v = String(value); // safe now: value is present (may be "")
     flashEl(el, 'fill');
     el.focus();
+    // Native <select>: don't type into it — match the value against option TEXT
+    // or VALUE (exact > startsWith > substring on text, then exact value), set
+    // .value and fire change. Lets fast_fill_form set native dropdowns inline.
+    if (el.tagName === 'SELECT') {
+      const all = Array.from(el.options);
+      const target = pickByText(all, o => (o.text || '').trim().toLowerCase(), v)
+                  || all.find(o => (o.value || '').toLowerCase() === v.toLowerCase());
+      if (!target) return { error: 'option not found in <select>', available: all.map(o => o.text) };
+      el.value = target.value;
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      return { filled: { tag: found.tag, label: found.label, name: found.name }, valueSet: target.text, kind: 'native-select' };
+    }
     if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
       const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
       const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
@@ -1351,123 +1367,155 @@ async function runPageAction(action, args) {
   }
 
   if (action === 'fast_select_option') {
-    const fieldQ = (args.field || '').toLowerCase();
-    const optionText = String(args.option || '');
-    if (!fieldQ || !optionText) return { error: 'field and option required' };
-
     const queryAllDeep = (root, selector) => {
       const out = [];
       walkDeep(root, selector, (el) => out.push(el));
       return out;
     };
 
-    const findField = () => {
-      const escName = CSS.escape(args.field);
+    const findField = (fieldRaw, fieldLo) => {
+      const escName = CSS.escape(fieldRaw);
       const byName = queryAllDeep(document, `[name="${escName}" i]`)[0];
       if (byName) return byName;
-      const byId = lookupId(document.documentElement, args.field);
+      const byId = lookupId(document.documentElement, fieldRaw);
       if (byId) return byId;
       const fieldish = 'input,select,textarea,[role="combobox"],[role="listbox"],[role="textbox"],[role="searchbox"],[contenteditable="true"],[contenteditable=""],[aria-labelledby],[aria-label],[placeholder]';
       const candidatesAll = queryAllDeep(document, fieldish);
       for (const el of candidatesAll) {
         const lbl = labelFor(el);
-        if (lbl && lbl.toLowerCase().includes(fieldQ)) return el;
+        if (lbl && lbl.toLowerCase().includes(fieldLo)) return el;
       }
       for (const el of candidatesAll) {
         const al = el.getAttribute && el.getAttribute('aria-label');
-        if (al && al.toLowerCase().includes(fieldQ)) return el;
+        if (al && al.toLowerCase().includes(fieldLo)) return el;
       }
       for (const el of candidatesAll) {
         const ph = el.getAttribute && el.getAttribute('placeholder');
-        if (ph && ph.toLowerCase().includes(fieldQ)) return el;
+        if (ph && ph.toLowerCase().includes(fieldLo)) return el;
       }
       return null;
     };
 
-    const field = findField();
-    if (!field) return { error: `field "${args.field}" not found` };
     const optText = (o) => (o.textContent || '').trim().toLowerCase();
 
-    if (field.tagName === 'SELECT') {
-      const all = Array.from(field.options);
-      const target = pickByText(all, o => (o.text || '').trim().toLowerCase(), optionText)
-                  || all.find(o => (o.value || '').toLowerCase() === optionText.toLowerCase());
-      if (!target) return { error: 'option not found in <select>', available: all.map(o => o.text) };
-      field.value = target.value;
-      field.dispatchEvent(new Event('change', { bubbles: true }));
-      return withSnap({ picked: target.text, kind: 'native-select' });
-    }
+    // Set ONE dropdown. Returns a plain result object (no snapshot) so it can be
+    // looped for batch mode. Shapes mirror the original single-call returns:
+    // success { picked, kind }, miss { error, ... }. Shared by both forms.
+    const setOne = async (fieldRaw, optionRaw) => {
+      const fieldLo = String(fieldRaw == null ? '' : fieldRaw).toLowerCase();
+      const optionText = String(optionRaw == null ? '' : optionRaw);
+      if (!fieldLo || !optionText) return { error: 'field and option required' };
 
-    const ctrl = field.closest('.react-select__control');
-    if (ctrl) {
-      if (!ctrl.classList.contains('react-select__control--menu-is-open')) ctrl.click();
-      await wait(250);
-      const input = ctrl.querySelector('input[id^="react-select-"]') || (field.tagName === 'INPUT' ? field : null);
-      if (input) {
-        input.focus();
-        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
-        setter.call(input, optionText);
-        input.dispatchEvent(new Event('input', { bubbles: true }));
-        await wait(400);
-      }
-      const listboxId = input?.id ? input.id.replace('-input', '-listbox') : null;
-      const listbox = (listboxId && document.getElementById(listboxId)) || document.querySelector('[role="listbox"]');
-      const opts = listbox ? Array.from(listbox.querySelectorAll('[id*="-option-"], [role="option"]')) : [];
-      const target = pickByText(opts, optText, optionText);
-      if (!target) {
-        return { error: 'no matching option in react-select', tried: optionText, available: opts.slice(0, 10).map(o => (o.textContent || '').trim()) };
-      }
-      target.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
-      target.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
-      target.click();
-      await wait(250);
-      return withSnap({ picked: (target.textContent || '').trim(), kind: 'react-select' });
-    }
+      const field = findField(fieldRaw, fieldLo);
+      if (!field) return { error: `field "${fieldRaw}" not found` };
 
-    // Generic ARIA listbox / menu. Index-driven: open the field, then poll
-    // INDEX for option/menuitem entries matching the requested text. Much
-    // faster than re-walking the document on every poll cycle.
-    field.focus();
-    field.click();
-    const optTextLo = optionText.toLowerCase();
-    // Scan the side-set of option-like entries — typically tens of elements,
-    // not the whole INDEX. Maintained at index-time by isOptionEntry().
-    const findOptInIndex = () => {
-      let exact = null, starts = null, sub = null;
+      if (field.tagName === 'SELECT') {
+        const all = Array.from(field.options);
+        const target = pickByText(all, o => (o.text || '').trim().toLowerCase(), optionText)
+                    || all.find(o => (o.value || '').toLowerCase() === optionText.toLowerCase());
+        if (!target) return { error: 'option not found in <select>', available: all.map(o => o.text) };
+        field.value = target.value;
+        field.dispatchEvent(new Event('change', { bubbles: true }));
+        return { picked: target.text, kind: 'native-select' };
+      }
+
+      const ctrl = field.closest('.react-select__control');
+      if (ctrl) {
+        if (!ctrl.classList.contains('react-select__control--menu-is-open')) ctrl.click();
+        await wait(250);
+        const input = ctrl.querySelector('input[id^="react-select-"]') || (field.tagName === 'INPUT' ? field : null);
+        if (input) {
+          input.focus();
+          const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+          setter.call(input, optionText);
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+          await wait(400);
+        }
+        const listboxId = input?.id ? input.id.replace('-input', '-listbox') : null;
+        const listbox = (listboxId && document.getElementById(listboxId)) || document.querySelector('[role="listbox"]');
+        const opts = listbox ? Array.from(listbox.querySelectorAll('[id*="-option-"], [role="option"]')) : [];
+        const target = pickByText(opts, optText, optionText);
+        if (!target) {
+          return { error: 'no matching option in react-select', tried: optionText, available: opts.slice(0, 10).map(o => (o.textContent || '').trim()) };
+        }
+        target.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+        target.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+        target.click();
+        await wait(250);
+        return { picked: (target.textContent || '').trim(), kind: 'react-select' };
+      }
+
+      // Generic ARIA listbox / menu. Index-driven: open the field, then poll
+      // INDEX for option/menuitem entries matching the requested text. Much
+      // faster than re-walking the document on every poll cycle.
+      field.focus();
+      field.click();
+      const optTextLo = optionText.toLowerCase();
+      // Scan the side-set of option-like entries — typically tens of elements,
+      // not the whole INDEX. Maintained at index-time by isOptionEntry().
+      const findOptInIndex = () => {
+        let exact = null, starts = null, sub = null;
+        for (const el of INDEX.options) {
+          if (!el.isConnected) continue;
+          const entry = INDEX.byEl.get(el);
+          if (!entry) continue;
+          const t = (entry.text || '').toLowerCase().trim();
+          if (!t) continue;
+          if (t === optTextLo)              { exact  = el; break; }
+          if (!starts && t.startsWith(optTextLo)) starts = el;
+          if (!sub    && t.includes(optTextLo))   sub   = el;
+        }
+        return exact || starts || sub;
+      };
+      const deadline = Date.now() + (args.timeoutMs || 3000);
+      let target = null;
+      while (Date.now() < deadline) {
+        drainPendingSync(2000, 30);
+        target = findOptInIndex();
+        if (target) break;
+        await wait(50);
+      }
+      if (target) {
+        target.click();
+        return { picked: (target.textContent || '').trim(), kind: 'aria-listbox' };
+      }
+      // Build a small `available` list from the options side-set so Claude
+      // has something to work with on a miss.
+      const available = [];
       for (const el of INDEX.options) {
         if (!el.isConnected) continue;
         const entry = INDEX.byEl.get(el);
-        if (!entry) continue;
-        const t = (entry.text || '').toLowerCase().trim();
-        if (!t) continue;
-        if (t === optTextLo)              { exact  = el; break; }
-        if (!starts && t.startsWith(optTextLo)) starts = el;
-        if (!sub    && t.includes(optTextLo))   sub   = el;
+        if (entry) available.push((entry.text || '').trim());
+        if (available.length >= 10) break;
       }
-      return exact || starts || sub;
+      return { error: 'no matching option in listbox / no listbox detected', tried: optionText, available };
     };
-    const deadline = Date.now() + (args.timeoutMs || 3000);
-    let target = null;
-    while (Date.now() < deadline) {
-      drainPendingSync(2000, 30);
-      target = findOptInIndex();
-      if (target) break;
-      await wait(50);
+
+    // BATCH mode: a { field: option } map sets many dropdowns in one call —
+    // each resolved + set in document via setOne, looped. An explicit single
+    // field+option passed alongside is merged in (the selections map wins on a
+    // key collision). Returns a per-field results map (like fast_fill_form).
+    const selections = (args.selections && typeof args.selections === 'object' && !Array.isArray(args.selections))
+      ? args.selections : null;
+    if (selections) {
+      const combined = { ...selections };
+      if (args.field != null && args.option != null && !(args.field in combined)) {
+        combined[args.field] = args.option;
+      }
+      const results = {};
+      let picked = 0, failed = 0;
+      for (const [fieldKey, opt] of Object.entries(combined)) {
+        const r = await setOne(fieldKey, opt);
+        results[fieldKey] = r;
+        if (r && !r.error) picked++; else failed++;
+      }
+      return withSnap({ picked, failed, total: Object.keys(combined).length, results });
     }
-    if (target) {
-      target.click();
-      return withSnap({ picked: (target.textContent || '').trim(), kind: 'aria-listbox' });
-    }
-    // Build a small `available` list from the options side-set so Claude
-    // has something to work with on a miss.
-    const available = [];
-    for (const el of INDEX.options) {
-      if (!el.isConnected) continue;
-      const entry = INDEX.byEl.get(el);
-      if (entry) available.push((entry.text || '').trim());
-      if (available.length >= 10) break;
-    }
-    return { error: 'no matching option in listbox / no listbox detected', tried: optionText, available };
+
+    // Single form (unchanged behaviour): success wrapped with a fresh snapshot,
+    // misses returned plain.
+    const r = await setOne(args.field, args.option);
+    return (r && !r.error) ? withSnap(r) : r;
   }
 
   if (action === 'fast_hover') {

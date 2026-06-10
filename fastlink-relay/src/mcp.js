@@ -31,6 +31,12 @@ const INSTRUCTIONS = [
   '- Fill multi-field forms with fast_fill_form in one call, not field-by-field.',
   '- Action results (fast_click / fast_fill / fast_wait) already include a snapshot — chain off THAT; do not issue a separate fast_snapshot right after.',
   '- Do NOT add artificial waits/sleeps — tabs load fast. Use fast_wait only when there is a real async signal (new view text, network idle), not as a reflex after every action.',
+  '',
+  'WHICH TOOL WHEN (rule of thumb: snapshot to read → DOM tools to act → vision only when the element is not in the DOM or the page is too heavy → batch when the path is known):',
+  '- DEFAULT TO DOM TOOLS for normal HTML pages (the vast majority). Read with fast_snapshot; act with fast_click / fast_fill / fast_fill_form / fast_select_option. They are the fastest and most precise — TRY DOM FIRST.',
+  '- USE VISION TOOLS (fast_point / fast_locate / fast_fill_vision) ONLY when DOM can\'t see or reach the target: canvas/WebGL, cross-origin iframes, image-only or custom-rendered UIs, or when DOM tools return nothing / freeze on a very heavy page. Gemini reads the screenshot and returns coordinates. Vision is a FALLBACK, not the default.',
+  '- USE fast_batch when you already KNOW the full step sequence (navigate → fill → click → wait) to cut round-trips. DON\'T batch when you must SEE a step\'s result before deciding the next (exploratory/branching flows) — run those one at a time.',
+  '- USE fast_scout to pre-read a complex/unfamiliar page so you can plan the whole interaction in one pass before acting.',
 ].join('\n');
 
 // ---- JSON-RPC plumbing ----------------------------------------------------
