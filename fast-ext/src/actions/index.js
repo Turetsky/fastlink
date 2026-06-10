@@ -19,6 +19,27 @@ const PAGE_ACTIONS = new Set([
   'fast_network_replay',
 ]);
 
+// Actions that can SUBMIT a form / follow a link / otherwise trigger a top-level
+// navigation. When executeScript's ack is lost because the navigation tore down
+// the MAIN-world frame before the click handler returned, the navigation ITSELF
+// is the evidence the action fired — so for these we treat a frame-removal error
+// as SUCCESS (navigated) instead of failing the step (BUG-2 sub-bug). READ
+// actions (fast_snapshot, fast_evaluate, …) are deliberately excluded: a frame
+// loss there is a real failure and must keep erroring. (Of these, only
+// fast_click / fast_select_option / fast_drag actually flow through runBridge;
+// fast_click_xy/fast_key/fast_key_press/fast_drag_xy use the CDP input path and
+// never hit this code — listed here for completeness / future-proofing.)
+const NAVIGATING_ACTIONS = new Set([
+  'fast_click', 'fast_click_xy', 'fast_key', 'fast_key_press',
+  'fast_select_option', 'fast_drag', 'fast_drag_xy',
+]);
+
+// executeScript rejection messages that mean the MAIN-world FRAME was torn down
+// (a navigation removed it) — as opposed to the TAB being gone/closed/restricted
+// (TAB_GONE_RE). Matched case-insensitively against the RAW chrome error string.
+const FRAME_REMOVED_RE = /frame with id \d+ was removed|frame was removed|no frame with id|frame.*detached/i;
+const TAB_GONE_RE = /no tab with id|cannot access|chrome:\/\/|the tab was closed|tab was discarded/i;
+
 let __evtSeq = 0;
 
 // ---------------------------------------------------------------------------
@@ -151,7 +172,11 @@ async function runBridge(tabId, action, args) {
     });
     return result;
   } catch (e) {
-    return { __injectError: `${action}: could not inject into target tab ${tabId} (${e?.message || e}). The tab may have been closed or navigated to a restricted URL.` };
+    // Keep the raw chrome message ALONGSIDE the human-readable wrapper so the
+    // caller can classify the failure (frame-teardown-on-navigation vs the tab
+    // genuinely being gone) without re-matching against our own wrapper text.
+    const raw = e?.message || String(e);
+    return { __injectError: `${action}: could not inject into target tab ${tabId} (${raw}). The tab may have been closed or navigated to a restricted URL.`, __injectRaw: raw };
   }
 }
 
@@ -199,7 +224,23 @@ async function injectPageAction(action, args) {
   }
 
   // executeScript itself failed (tab closed / restricted mid-flight).
-  if (result && result.__injectError) return { error: result.__injectError };
+  if (result && result.__injectError) {
+    const raw = String(result.__injectRaw || result.__injectError);
+    // BUG-2 sub-bug: a NAVIGATING action (e.g. a Submit click / link-follow)
+    // makes the page navigate, which removes the MAIN-world frame BEFORE the
+    // injected handler's ack returns — so executeScript rejects with "Frame with
+    // ID 0 was removed." even though the action fired and the page navigated
+    // correctly. For navigating actions, a frame-teardown is PROOF the action
+    // worked, not a failure: report SUCCESS (navigated:true) so the step is
+    // ok and a fast_batch continues (the server-side settle re-binds the next
+    // step on the new page). Guard rails: only when the TAB itself isn't gone
+    // (TAB_GONE_RE still errors), and only for NAVIGATING_ACTIONS — a frame loss
+    // during a READ action stays an error so we never mask a real failure.
+    if (NAVIGATING_ACTIONS.has(action) && FRAME_REMOVED_RE.test(raw) && !TAB_GONE_RE.test(raw)) {
+      return { ok: true, navigated: true, note: 'action triggered navigation; old frame torn down before ack' };
+    }
+    return { error: result.__injectError };
+  }
 
   // null/undefined from the injected script means it threw before returning.
   // Surface that as an error rather than guessing what happened (the old

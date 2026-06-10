@@ -1226,30 +1226,82 @@ async function runPageAction(action, args) {
     // Only when we find a match do we serialize that ONE entry with
     // coords, so a polling fast_wait doesn't repeatedly force layout
     // on the whole page while it's still rendering.
+    // Scan the index for a match. Prefer an interactive ('click') entry so the
+    // clickable path keeps returning coords; fall back to a non-interactive
+    // ('content') entry — headings, paragraphs, <pre> JSON, body text — so
+    // fast_wait can resolve on plain page content too. Returns { el, content }.
     const findEntryByText = () => {
       // Bound the per-poll scan so polling (every 150ms) can never jank: on a
       // 10k-entry index an unbounded scan + drain every tick adds up. Cap nodes
       // and wall-clock; a real match is found in the first slice on normal pages.
       let scanned = 0;
       const start = nowMs();
+      let contentEl = null;
       for (const [el, entry] of INDEX.byEl) {
         if ((++scanned & 511) === 0 && (nowMs() - start) > 20) break;
         if (scanned > 12000) break;
-        if (entry.kind !== 'click') continue;
-        if (entry.text && entry.text.toLowerCase().includes(t)) return el;
+        if (entry.kind === 'click') {
+          if (entry.text && entry.text.toLowerCase().includes(t)) return { el, content: false };
+        } else if (entry.kind === 'content') {
+          // Remember the first content hit but keep scanning — a clickable hit
+          // (richer result with coords) is preferred if one also matches.
+          if (!contentEl && entry.text && entry.text.toLowerCase().includes(t)) contentEl = el;
+        }
       }
-      return null;
+      return contentEl ? { el: contentEl, content: true } : null;
+    };
+    // Cheap, bounded descent to the smallest element fully containing `t`, so a
+    // content match can still carry coords. One child scan per level, depth-
+    // capped — never a full-document walk.
+    const smallestContaining = () => {
+      try {
+        let el = document.body;
+        if (!el || !(el.textContent || '').toLowerCase().includes(t)) return null;
+        for (let depth = 0; depth < 200; depth++) {
+          let next = null;
+          for (const child of el.children) {
+            if (child.nodeType === 1 && (child.textContent || '').toLowerCase().includes(t)) { next = child; break; }
+          }
+          if (!next) break;
+          el = next;
+        }
+        return el;
+      } catch { return null; }
     };
     return new Promise((resolve) => {
-      const poll = () => {
-        drainPendingSync(500, 15);
-        const el = findEntryByText();
+      // A content/body match: resolve found.contentMatch without requiring an
+      // interactive element. Attach coords when we can locate a containing
+      // element (visible), but never drop the match for lack of one. Still
+      // attaches the bounded post-wait snapshot (honors noSnapshot).
+      const resolveContent = (el, matched) => {
+        const found = { text: matched, contentMatch: true };
         if (el && el.isConnected) {
-          // Only now read rect/visibility for the matched element.
           let rect; try { rect = el.getBoundingClientRect(); } catch { rect = null; }
           if (rect && visible(el, rect)) {
-            const entry = INDEX.byEl.get(el);
             const off = offsetFor(el);
+            found.x = Math.round(rect.x + off.ox);
+            found.y = Math.round(rect.y + off.oy);
+            found.w = Math.round(rect.width);
+            found.h = Math.round(rect.height);
+          }
+        }
+        return resolve(withSnap({ found }));
+      };
+      let polls = 0;
+      const poll = () => {
+        polls++;
+        drainPendingSync(500, 15);
+        const hit = findEntryByText();
+        if (hit && hit.el && hit.el.isConnected) {
+          const entry = INDEX.byEl.get(hit.el);
+          if (hit.content) {
+            // Non-interactive content entry — resolve as a content match.
+            return resolveContent(hit.el, (entry && entry.text) || args.text);
+          }
+          // Interactive entry: only now read rect/visibility for the match.
+          let rect; try { rect = hit.el.getBoundingClientRect(); } catch { rect = null; }
+          if (rect && visible(hit.el, rect)) {
+            const off = offsetFor(hit.el);
             // Attach a post-wait snapshot (like fast_click/fast_fill) so the
             // agent can chain off the now-settled view without a second call.
             // withSnap is bounded + non-fatal and honors noSnapshot:true.
@@ -1261,6 +1313,20 @@ async function runPageAction(action, args) {
               w: Math.round(rect.width), h: Math.round(rect.height),
             }}));
           }
+          // Click entry matched but not yet visible — fall through to the body
+          // fallback / keep polling.
+        }
+        // Fallback: visible text that isn't an index entry (e.g. a raw <pre>
+        // JSON blob may not be indexed as a content entry). Runs ONLY after the
+        // cheap index scan misses. textContent does NOT force layout; gate to
+        // every other poll so even a multi-MB body can't jank a 150ms loop.
+        if (polls & 1) {
+          try {
+            const tc = document.body && document.body.textContent;
+            if (tc && tc.toLowerCase().includes(t)) {
+              return resolveContent(smallestContaining(), args.text);
+            }
+          } catch {}
         }
         if (Date.now() > deadline) {
           // Direct DOM read (no snapshot/INDEX): give the agent a peek at the
