@@ -1,0 +1,14 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<!--
+  FastLink self-hosted Chrome update manifest.
+  Polled by Chrome (~every 5h) via the `update_url` baked into fast-ext/manifest.json:
+    https://raw.githubusercontent.com/Turetsky/fastlink/main/release/updates.xml
+  appid is the stable extension ID derived from the manifest "key" / signing .pem.
+  On each release: bump `version` + point `codebase` at the new release asset, then
+  commit (raw URL updates) and upload the new .crx as that GitHub Release asset.
+-->
+<gupdate xmlns='http://www.google.com/update2/response' protocol='2.0'>
+  <app appid='ockcjadbkdfgfllidpcoamcepahfmlpf'>
+    <updatecheck codebase='https://github.com/Turetsky/fastlink/releases/download/ext-v0.4.2/fastlink-0.4.2.crx' version='0.4.2' />
+  </app>
+</gupdate>
