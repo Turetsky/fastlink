@@ -196,7 +196,7 @@ function persistActivity() {
   try {
     chrome.storage.session.set({
       [ACTIVITY_KEY]: {
-        running: [...inflight.values()].map((e) => ({ action: e.action, start: e.start, tabId: e.tabId })),
+        running: [...inflight.values()].map((e) => ({ action: e.action, start: e.start, tabId: e.tabId, transport: e.transport })),
         inFlight: inflight.size,
         stuck: stuckActive,
         last: lastDone,
@@ -657,12 +657,18 @@ function tVerb(a) { return TVERB[a] || String(a || '').replace(/^fast_/, '').rep
 // stuckThreshold() as the tracker so the two never disagree.
 function buildActivitySummary() {
   const a = latestActivity;
-  if (!a || !Array.isArray(a.running) || a.running.length === 0) return { state: 'idle', last: a?.last || null };
-  let oldest = a.running[0];
-  for (const r of a.running) if (r.start < oldest.start) oldest = r;
+  // The transcript overlay represents the claude.ai-WEB (relay) session — so only
+  // RELAY-transport commands count as "driving." A local Claude Code command must
+  // NOT flip this to running and surface the relay card on the user's tabs.
+  // (Older persisted entries lacked `transport`; they filter out → idle, which
+  // self-corrects on the next relay command.)
+  const running = Array.isArray(a?.running) ? a.running.filter((r) => r.transport === 'relay') : [];
+  if (!running.length) return { state: 'idle', last: a?.last || null };
+  let oldest = running[0];
+  for (const r of running) if (r.start < oldest.start) oldest = r;
   const secs = Math.round((Date.now() - oldest.start) / 1000);
-  const stuck = a.stuck || (Date.now() - oldest.start >= stuckThreshold(oldest.action));
-  const more = a.running.length > 1 ? ` +${a.running.length - 1}` : '';
+  const stuck = Date.now() - oldest.start >= stuckThreshold(oldest.action);
+  const more = running.length > 1 ? ` +${running.length - 1}` : '';
   return { state: stuck ? 'stuck' : 'running', label: tVerb(oldest.action) + more, secs, last: a.last || null };
 }
 
@@ -868,29 +874,23 @@ chrome.storage.onChanged.addListener((changes, area) => {
   refreshActiveOverlay();
 });
 
-// Track the active tab so the overlay follows the user across tabs/windows.
-// onActivated/onCreated/onUpdated all (re)push the overlay; each routes through
-// pushOverlay(), which is gated on relayActiveState — so they no-op unless
-// claude.ai-web is currently driving, and the auto-surface only happens then.
+// Track the active tab so the overlay follows the user to whatever tab they're
+// LOOKING AT. Each refresh routes through pushOverlay(), which is gated on
+// relayActiveState AND on the overlay's own transcriptWorthShowing() — so the
+// card mounts ONLY while a relay command is genuinely running/stuck (or a
+// permission prompt is up), never on an idle relay. We deliberately do NOT
+// preemptively paint new/background tabs anymore: a tab gets the card only once
+// it is the active tab AND the relay is actually driving (the "card on every new
+// tab while idle" complaint). Background tabs being driven still show their
+// tool-call ROWS via notifyOverlay (the driven/pinned tab), independent of this.
 chrome.tabs.onActivated.addListener(({ tabId }) => { activeTabId = tabId; refreshActiveOverlay(); });
-// Claude/the relay opening a NEW tab: while a relay session is driving, make the
-// transcript overlay follow onto it promptly. A fresh tab is usually chrome://newtab
-// (not injectable) so this often no-ops here and is (re)caught by onUpdated
-// 'complete' once it navigates to a real page.
-chrome.tabs.onCreated.addListener((tab) => {
-  if (relayActiveState && tab && typeof tab.id === 'number') pushOverlay(tab.id);
-});
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   // A document load wipes the injected content script — drop the guard so it
   // re-injects on the next push.
   if (changeInfo.status === 'loading') overlayInjected.delete(tabId);
-  if (changeInfo.status === 'complete') {
-    if (tab?.active) { activeTabId = tabId; refreshActiveOverlay(); }
-    // A relay-driven tab that finished loading but isn't the user's active tab
-    // still gets the overlay (gated + de-duped inside pushOverlay) so it's already
-    // present the instant the user or Claude switches to it.
-    else if (relayActiveState) pushOverlay(tabId);
-  }
+  // Only refresh the user's ACTIVE tab on load — never preemptively push onto a
+  // backgrounded tab.
+  if (changeInfo.status === 'complete' && tab?.active) { activeTabId = tabId; refreshActiveOverlay(); }
 });
 chrome.tabs.onRemoved.addListener((tabId) => {
   overlayInjected.delete(tabId);

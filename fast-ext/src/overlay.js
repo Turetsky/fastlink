@@ -33,12 +33,19 @@
   const HOST_ID = '__fastlink_overlay_host__';
   const MAX_ROWS = 8;
   const OV_MAX_LINES = 7;   // transcript section is small — show only recent lines
-  const FADE_AFTER_MS = 4000;
-  const REMOVE_AFTER_MS = 6000;
+  const FADE_AFTER_MS = 1800;
+  const REMOVE_AFTER_MS = 3000;
   // Tear the whole panel off the page this long after the LAST tool finishes
   // (no rows still running). The panel mounts lazily on the first tool, so this
   // gives it a symmetric lifecycle: appear on first tool, vanish after the last.
-  const DISMISS_AFTER_MS = 5000;
+  // Kept short so a finished burst clears fast instead of lingering on the tab.
+  const DISMISS_AFTER_MS = 2200;
+  // HARD GUARD (belt-and-suspenders). Regardless of any stuck timer, lost 'end'
+  // ping, or background bug, the panel must NEVER sit on a page indefinitely when
+  // nothing is actually happening. A watchdog force-destroys the host once it has
+  // been mounted this long with no running row, no live transcript, and no pending
+  // permission. This is the last line of defense behind every other dismiss path.
+  const HARD_MAX_IDLE_MS = 4000;
 
   let host = null;
   let shadow = null;
@@ -46,6 +53,7 @@
   let statusEl = null;
   let hdrDot = null;
   let dismissTimer = null;
+  let mountedAt = 0;   // performance.now() when the host was last mounted (hard-guard)
   const rows = new Map(); // id -> { rowEl, args, label, timers }
 
   // Transcript/permission section — folded in from the former transcriptOverlay.js
@@ -144,6 +152,7 @@
 
   const ensureMounted = () => {
     if (host && document.documentElement.contains(host)) return;
+    mountedAt = performance.now();
     host = document.createElement('div');
     host.id = HOST_ID;
     host.style.cssText = 'all:initial;position:fixed;top:12px;right:12px;z-index:2147483647;pointer-events:none;';
@@ -413,12 +422,13 @@
   // current-action) OR a genuinely running/stuck relay session is required.
   const transcriptWorthShowing = () => {
     const t = tData, a = tActivity;
-    if (t) {
-      if (t.permission && t.permission.present) return true;
-      if (t.structured && t.structured.currentAction) return true;
-      if (t.available && t.structured && Array.isArray(t.structured.lines) && t.structured.lines.length) return true;
-      if (t.available && t.text) return true;
-    }
+    // A pending permission prompt always surfaces — it needs the user regardless
+    // of driving state.
+    if (t && t.permission && t.permission.present) return true;
+    // Otherwise surface ONLY while the relay is GENUINELY working (a relay command
+    // running/stuck). Never mount for an IDLE relay just because stale transcript
+    // text/lines are still cached from an earlier turn — that is what made the
+    // "Claude is driving this tab / idle — last: …" card ride every tab.
     if (a && (a.state === 'running' || a.state === 'stuck')) return true;
     return false;
   };
@@ -618,6 +628,24 @@
     if (performance.now() - lastMsgAt > STALE_MS) markStale();
   }, 2000);
 
+  // HARD GUARD watchdog. Independent of every other dismiss path: if the host is
+  // mounted but there is genuinely nothing to show — no row still running, no live
+  // relay transcript, no pending permission prompt — for longer than
+  // HARD_MAX_IDLE_MS, force it off the page. This catches any case the normal
+  // timers miss (a lost 'end' ping, a stuck background gate, a re-mount that never
+  // got a dismiss armed) so the panel can never ride a tab while idle.
+  const permissionPending = () => !!(tData && tData.permission && tData.permission.present);
+  const hardGuard = setInterval(() => {
+    if (!host || !document.documentElement.contains(host)) return;
+    if (anyRunning() || transcriptActive || permissionPending() || staleNeutral) return;
+    // Idle since the last real signal (tool event / transcript push). mountedAt
+    // seeds it so a panel that mounts and then goes silent still ages out.
+    const idleSince = Math.max(lastMsgAt, mountedAt);
+    if (performance.now() - idleSince < HARD_MAX_IDLE_MS) return;
+    clearAll();
+    destroyHost();
+  }, 1000);
+
   // Self-heal: when the extension is reloaded, this content script is orphaned —
   // chrome.runtime.id starts throwing "Extension context invalidated" and no new
   // tool events can arrive. Show a TRANSIENT reconnecting note (not a permanent
@@ -629,6 +657,7 @@
     if (alive) return;
     clearInterval(ctxWatch);
     try { clearInterval(staleWatch); } catch {}
+    try { clearInterval(hardGuard); } catch {}
     try {
       clearAll();                 // drop frozen rows so no stale "▶ …" lingers
       staleNeutral = true;
@@ -644,6 +673,7 @@
     try { removePrewarmDot(); } catch {}
     try { clearInterval(ctxWatch); } catch {}
     try { clearInterval(staleWatch); } catch {}
+    try { clearInterval(hardGuard); } catch {}
     try { chrome.runtime.onMessage.removeListener(onMessage); } catch {}
     try { window.removeEventListener('pagehide', onPageHide); } catch {}
     try { window.removeEventListener('pageshow', onPageShow); } catch {}
