@@ -1,8 +1,9 @@
-import { writeFileSync, readdirSync, statSync, unlinkSync } from 'fs';
+import { writeFileSync, readdirSync, statSync, unlinkSync, existsSync } from 'fs';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { join, resolve } from 'path';
+import { execFileSync } from 'child_process';
 import { Buffer } from 'buffer';
-import { callExtension, getStatus, getBrokerLinkInfo } from './brokerClient.js';
+import { callExtension, getStatus, getBrokerLinkInfo, setSelectedInstall, getSelectedInstall } from './brokerClient.js';
 import { HTTP_ENABLED, HTTP_PORT, TOKEN, SCOUT_ENABLED } from './config.js';
 import { scout, warm as warmScout, locateByImage, pointByImage, boxByImage, pickMarks, visualMap, getVisualMap, planByImage } from './scout.js';
 
@@ -99,6 +100,7 @@ export async function handleCall(name, args) {
 async function dispatchCall(name, args) {
   try {
     if (name === 'fast_prewarm') return text(prewarmStatus());
+    if (name === 'fast_profile') return text(await handleUseInstall(args));
     if (name === 'fast_status') return text(await statusReport());
     if (name === 'fast_batch')  return text(await runBatch(args));
     if (name === 'fast_scout')  return text(await handleScout(args));
@@ -107,9 +109,15 @@ async function dispatchCall(name, args) {
     if (name === 'fast_fill_vision') return text(await handleFillVision(args));
     if (name === 'fast_do') return text(await handleDo(args));
     if (name === 'fast_locate') return text(await handleLocate(args));
+    if (name === 'fast_upload') return text(await handleUpload(args));
     const payload = CAPTURE_TOOLS.has(name)
       ? await callCapture(name, args || {})
       : await callExtension(name, args || {});
+    // A page-mutating action can change the layout WITHOUT changing the URL, which
+    // leaves the URL-keyed warm screenshot cache stale. Reusing it made the vision
+    // tier locate off an old frame and "type into nowhere". Drop warm captures
+    // after any mutating tool so the next vision call recaptures fresh.
+    if (MUTATING_TOOLS.has(name) && !(payload && payload.error)) warmCaptures.clear();
     // Tool-level errors come back as resolved payloads with `error` set, plus
     // any extras (diagnostics, available, etc.). Surface them as text so the
     // LLM sees everything, not just the message.
@@ -135,10 +143,124 @@ async function dispatchCall(name, args) {
   }
 }
 
+// fast_profile: pin THIS session's calls to a slot label (BUG-5). "auto"/null →
+// broker default (ACTIVE-then-any-connected).
+async function handleUseInstall(args) {
+  const broker = await getStatus().catch(e => ({ error: e.message }));
+  const installs = broker?.installs || {};
+  const known = Object.keys(installs);
+  const raw = (args?.install ?? '').toString().trim().toLowerCase();
+
+  if (raw === '' || raw === 'auto' || raw === 'default' || raw === 'none') {
+    setSelectedInstall(null);
+    return {
+      selected: null,
+      mode: 'auto',
+      installs,
+      hint: `AUTO — calls route to the active/any-connected slot. Known: ${known.join(', ') || '(none yet)'}.`,
+    };
+  }
+  // Sanitize to the broker/extension slot key so the pin matches the `hello`.
+  // Not-yet-connected labels are allowed (pin before opening the profile).
+  const want = raw.replace(/[^a-z0-9_-]/g, '').replace(/^[-_]+/, '').slice(0, 32);
+  if (!want) {
+    return {
+      error: `Invalid label "${raw}". Use [a-z0-9_-] (e.g. "work"), or "auto" to release.`,
+      selected: getSelectedInstall(),
+      installs,
+    };
+  }
+  setSelectedInstall(want);
+  const connected = !!installs[want]?.connected;
+  return {
+    selected: want,
+    mode: 'pinned',
+    connected,
+    installs,
+    hint: connected
+      ? `Pinned to "${want}"; all calls route there. fast_profile "auto" releases.`
+      : `Pinned to "${want}" but NOT connected — open FastLink in that profile with slot label "${want}". Calls error until it connects. Connected now: ${known.filter(k => installs[k]?.connected).join(', ') || '(none)'}.`,
+  };
+}
+
+// fast_upload: resolve each caller-supplied path to a path the WINDOWS Chrome
+// process can open, verify it exists, then hand the Windows paths to the extension
+// (which drives CDP DOM.setFileInputFiles). The MCP server runs under WSL while
+// Chrome runs on Windows, so a WSL path like /home/you/x.png is NOT openable by
+// Chrome as-is — we translate it to \\wsl.localhost\<distro>\… via `wslpath`.
+//
+// Accepts, per path:
+//   • a Windows path      C:\Users\you\pic.png  (or C:/Users/you/pic.png)
+//   • a WSL mount path    /mnt/c/Users/you/pic.png
+//   • a native WSL path   /home/you/file.pdf  (or a relative path)
+// and returns the Windows form for each. Existence is checked from the WSL side.
+function wslpath(flag, p) {
+  try { return execFileSync('wslpath', [flag, p], { encoding: 'utf8' }).trim(); }
+  catch { return null; }
+}
+
+function resolveToWindowsPath(input) {
+  const p = String(input).trim().replace(/^["']|["']$/g, '');
+  if (!p) return { error: 'empty path' };
+
+  const isWin = /^[A-Za-z]:[\\/]/.test(p);
+  const isUnc = /^\\\\/.test(p);
+  if (isWin || isUnc) {
+    const winPath = p.replace(/\//g, '\\'); // Chrome wants backslashes
+    // Verify existence from WSL by mapping the Windows path back to /mnt/…
+    const wslForCheck = wslpath('-u', winPath);
+    if (wslForCheck && !existsSync(wslForCheck)) {
+      return { error: `file not found: ${p} (looked at ${wslForCheck})` };
+    }
+    return { winPath };
+  }
+
+  // A WSL/POSIX path (absolute or relative). Resolve, confirm it exists, then get
+  // the Windows form (/mnt/c/… → C:\…, /home/… → \\wsl.localhost\<distro>\…).
+  const abs = resolve(p);
+  if (!existsSync(abs)) return { error: `file not found: ${abs}` };
+  const winPath = wslpath('-w', abs);
+  if (!winPath) return { error: `could not convert ${abs} to a Windows path (is wslpath available?)` };
+  return { winPath };
+}
+
+async function handleUpload(args) {
+  const raw = Array.isArray(args?.paths) ? args.paths
+    : (args?.paths != null ? [args.paths] : (args?.path != null ? [args.path] : []));
+  if (!raw.length) {
+    return { error: 'fast_upload needs `path` (a single file) or `paths` (an array of files).' };
+  }
+
+  const resolved = [];
+  const problems = [];
+  for (const p of raw) {
+    const r = resolveToWindowsPath(p);
+    if (r.error) problems.push({ path: p, error: r.error });
+    else resolved.push(r.winPath);
+  }
+  // If ANY path is bad, refuse the whole call — a partial upload is worse than a
+  // clear error the caller can fix.
+  if (problems.length) {
+    return { error: 'fast_upload: could not resolve some file path(s).', problems, resolvedOk: resolved };
+  }
+
+  const payload = await callExtension('fast_upload', {
+    selector: args?.selector,
+    text: args?.text,
+    index: args?.index,
+    paths: resolved,
+  });
+  if (payload && typeof payload === 'object' && 'error' in payload) {
+    return { ...payload, resolvedPaths: resolved };
+  }
+  return { ...(payload?.result ?? {}), resolvedPaths: resolved };
+}
+
 async function statusReport() {
   const broker = await getStatus().catch(e => ({ error: e.message }));
   const link = getBrokerLinkInfo();
   const justReconnected = link.lastDisconnectAgoMs != null && link.lastDisconnectAgoMs < 10_000;
+  const selected = getSelectedInstall();
 
   const hints = [];
   if (broker?.connected) {
@@ -147,11 +269,19 @@ async function statusReport() {
   } else {
     hints.push('Extension NOT connected. Open chrome://extensions, find "FastLink", click its "service worker" link to see if it errored.');
   }
+  // When >1 slot is connected, tell the LLM how to target a specific one.
+  const connectedSlots = Object.entries(broker?.installs || {}).filter(([, v]) => v?.connected).map(([k]) => k);
+  if (selected) {
+    hints.push(`This session is PINNED to install "${selected}" (fast_profile). Calls route only there; "auto" releases the pin.`);
+  } else if (connectedSlots.length > 1) {
+    hints.push(`Multiple Chrome profiles connected (${connectedSlots.join(', ')}); calls default to "${broker?.routedInstall}". Use fast_profile to target a specific profile.`);
+  }
   if (justReconnected) {
     hints.push(`Broker link reconnected ${Math.round(link.lastDisconnectAgoMs / 1000)}s ago — if the last call failed with "Connection closed", retry it once.`);
   }
   return {
     ...broker,
+    selectedInstall: selected,
     brokerLink: link,
     httpEnabled: HTTP_ENABLED,
     httpPort: HTTP_ENABLED ? HTTP_PORT : null,
@@ -334,6 +464,14 @@ export async function prewarmScout() {
 const VISION_WARM_DEBOUNCE_MS = 700; // let the page settle; coalesce rapid navs
 const WARM_CAPTURE_TTL_MS = 8000;    // a warm capture is reusable this long
 const warmCaptures = new Map();      // url -> { capture, ts }
+// Tools that change the page (so any cached warm screenshot is now stale). Used by
+// dispatchCall to invalidate warmCaptures after a mutating action.
+const MUTATING_TOOLS = new Set([
+  'fast_click', 'fast_click_xy', 'fast_type', 'fast_key', 'fast_key_press',
+  'fast_fill', 'fast_fill_form', 'fast_select_option', 'fast_nav', 'fast_reload',
+  'fast_scroll', 'fast_wheel', 'fast_drag', 'fast_drag_xy', 'fast_hover',
+  'fast_fill_vision', 'fast_do', 'fast_upload',
+]);
 let visionWarmTimer = null;
 let visionWarmInFlight = false;
 let pendingWarmUrl = null;
@@ -535,14 +673,28 @@ async function pointOnce(targets, refineMode, opts = {}) {
     if (domHits.some(Boolean)) return assemble(remaining.map((t) => ({ target: t, found: false })));
     return { error: full.error };
   }
-  let { points } = await pointByImage({ targets: remaining, base64: full.dataUrl });
+  // The vision call can THROW when the model provider is exhausted (e.g. Gemini
+  // 503 after all retries + the OpenRouter fallback). Don't let that strand the
+  // whole request: if the DOM already resolved some targets, keep them and mark
+  // the vision leftovers found:false; if nothing was resolved, surface a clear
+  // `visionUnavailable` error so callers (handleFillVision) can fall back to a
+  // pure-DOM fill before giving up.
+  let points;
+  try {
+    ({ points } = await pointByImage({ targets: remaining, base64: full.dataUrl }));
+  } catch (e) {
+    if (domHits.some(Boolean)) return assemble(remaining.map((t) => ({ target: t, found: false })));
+    return { error: e.message, visionUnavailable: true };
+  }
   const usedWarm = opts.freshCapture !== true && full.warm === true;
   const noneFound = !points.some((p) => p && p.found);
   if (usedWarm && noneFound) {
     const fresh = await captureForVision({ ...opts, freshCapture: true });
     if (!fresh.error) {
       full = fresh;
-      ({ points } = await pointByImage({ targets: remaining, base64: full.dataUrl }));
+      // A throw on the re-point is non-fatal — keep the (empty) coarse points.
+      try { ({ points } = await pointByImage({ targets: remaining, base64: full.dataUrl })); }
+      catch { /* vision provider down; coarse stays found:false, DOM fallback handles it */ }
     }
   }
 
@@ -659,8 +811,62 @@ async function handlePoint(args) {
 // then each is focused (trusted fast_click_xy) and typed (trusted fast_type)
 // sequentially server-side.
 //
+// DOM-FILL FALLBACK for the vision tier. When Gemini can't locate a field —
+// because it's genuinely off-screen OR because the vision provider is down after
+// retries — many forms are still reachable via the DOM: fast_fill_form walks open
+// shadow roots AND same-origin iframes, so "iframe" fields that are actually
+// same-origin widgets fill fine. This REUSES that existing DOM-fill internal (no
+// reimplementation); the plain-language field descriptions double as
+// label/placeholder/aria substrings, which match often enough to rescue the form.
+// A field genuinely NOT in the DOM (cross-origin iframe like idmsa.apple.com,
+// canvas) simply won't match and stays missed — correctly vision-only.
+// Returns the Set of field keys it successfully filled.
+async function domFillFallback(fieldsSubset) {
+  const keys = Object.keys(fieldsSubset || {});
+  if (!keys.length) return new Set();
+  try {
+    // verify:true → fast_fill_form re-reads each field after filling and flags any
+    // whose value reverted, so a DOM-fallback success is genuinely confirmed (not
+    // a silent false-positive). Only count a field done if it filled AND held.
+    const res = await callExtension('fast_fill_form', { fields: fieldsSubset, noSnapshot: true, verify: true });
+    const results = res?.result?.results || {};
+    const done = new Set();
+    for (const k of keys) {
+      const r = results[k];
+      if (r && !r.error && !r.skipped && !r.reverted) done.add(k);
+    }
+    return done;
+  } catch {
+    return new Set();
+  }
+}
+
+// VERIFY READ-BACK for vision-typed fields. Synthetic CDP typing is not confirmed
+// inline, so after filling we read the DOM back ONCE (a fresh fast_snapshot, whose
+// item.text carries each input's current value) and mark a field verified if its
+// typed value is now present on the page. Best-effort by design: same-origin DOM
+// fields get CONFIRMED; a value typed into a CROSS-ORIGIN iframe can't be read
+// back from the top document, so it stays verified:false ("typed, unverified") —
+// the honest answer. Mutates the `filled` entries in place. Skips trivially short
+// values (<2 chars) to avoid coincidental substring matches.
+async function verifyVisionFills(filled) {
+  const pending = filled.filter((f) => f.verified === false && typeof f.value === 'string' && f.value.trim().length >= 2);
+  if (!pending.length) return;
+  let items;
+  try {
+    const snap = await callExtension('fast_snapshot', { viewport: false });
+    items = snap?.result?.items;
+  } catch { return; }
+  if (!Array.isArray(items)) return;
+  const hay = items.map((it) => `${it.text || ''} ${it.label || ''} ${it.ariaLabel || ''} ${it.placeholder || ''} ${it.name || ''}`.toLowerCase());
+  for (const f of pending) {
+    const needle = String(f.value).trim().toLowerCase();
+    if (hay.some((h) => h.includes(needle))) f.verified = true;
+  }
+}
+
 // args: { fields: { "<field description>": "<value>", ... }, submit?: "<button desc>" }
-// returns: { filled:[{field,found,value}], missed:[descriptions not found], submitted:bool }
+// returns: { filled:[{field,found,value,verified}], missed:[...], submitted, unverified?, note? }
 async function handleFillVision(args) {
   if (!SCOUT_ENABLED) return { disabled: true, reason: 'set GEMINI_API_KEY to enable vision' };
   const fields = args?.fields;
@@ -676,8 +882,33 @@ async function handleFillVision(args) {
   // whole form is ~2-3 Gemini calls (capture+locate, then a parallel refine batch
   // ≈ 1 round-trip), not N.
   const targets = submit ? [...fieldKeys, submit] : fieldKeys;
-  const located = await pointOnce(targets, args?.refine, { confidenceSkip: true, freshCapture: args?.freshCapture === true });
-  if (located.error) return located;
+  // DEFAULT TO A FRESH CAPTURE. The pre-warm screenshot cache (warmCaptures) can
+  // serve a STALE frame — fields get located off an old layout, the trusted click
+  // lands on nothing, and typing goes into the void while we still report success.
+  // Capturing fresh for the fill path closes that silent false-positive; pass
+  // freshCapture:false to explicitly opt back into warm reuse.
+  const located = await pointOnce(targets, args?.refine, { confidenceSkip: true, freshCapture: args?.freshCapture !== false });
+  if (located.error) {
+    // Vision provider unavailable (e.g. Gemini overloaded after retries + fallback).
+    // Before surfacing the error, try a pure-DOM fill of every field — a Gemini
+    // outage must never strand a form the DOM can reach.
+    if (located.visionUnavailable) {
+      const domDone = await domFillFallback(fields);
+      if (domDone.size) {
+        // DOM fallback is read-back verified (domFillFallback passes verify:true).
+        const filled = [...domDone].map((k) => ({ field: k, found: true, value: String(fields[k] ?? ''), via: 'dom-fallback', verified: true }));
+        const missed = fieldKeys.filter((k) => !domDone.has(k));
+        let submitted = false;
+        if (submit) {
+          const c = await callExtension('fast_click', { text: submit }).catch(() => null);
+          submitted = !!(c && !c.error && !c?.result?.error);
+          if (!submitted) missed.push(submit);
+        }
+        return { filled, missed, submitted, note: 'vision unavailable (Gemini overloaded); filled via DOM fallback' };
+      }
+    }
+    return located;
+  }
   const points = located.points || [];
 
   const filled = [];
@@ -698,9 +929,38 @@ async function handleFillVision(args) {
     } else {
       await callExtension('fast_click_xy', { x: p.xCss, y: p.yCss });
     }
-    await callExtension('fast_type', { text: value });
-    filled.push({ field: key, found: true, value });
+    // force:true — the field was just focused by the trusted vision-confirmed
+    // click above; bypass fast_type's top-frame editable guard so values reach
+    // inputs inside CROSS-ORIGIN iframes (e.g. appleid.apple.com) too, which is
+    // the one fill path that works when those forms can't be reached any other way.
+    await callExtension('fast_type', { text: value, force: true });
+    // verified:false — synthetic CDP typing is NOT read back here. For DOM inputs
+    // a re-read is possible, but for cross-origin iframes (the main reason to use
+    // vision) it isn't, so we report honestly: located + typed, not confirmed.
+    filled.push({ field: key, found: true, value, verified: false });
   }
+
+  // DOM-FILL RESCUE: any field vision couldn't locate (below the fold, or low
+  // confidence) may still be DOM-reachable — prefer DOM over giving up. Reuse
+  // fast_fill_form on just the missed fields; move successes from missed→filled.
+  // Genuinely non-DOM fields (cross-origin iframe, canvas) won't match and stay
+  // missed. `missed` holds only field keys here (submit is added later).
+  if (missed.length) {
+    const subset = {};
+    for (const k of missed) subset[k] = fields[k];
+    const domDone = await domFillFallback(subset);
+    if (domDone.size) {
+      for (let i = missed.length - 1; i >= 0; i--) {
+        if (domDone.has(missed[i])) missed.splice(i, 1);
+      }
+      for (const k of domDone) filled.push({ field: k, found: true, value: String(fields[k] ?? ''), via: 'dom-fallback', verified: true });
+    }
+  }
+
+  // VERIFY the vision-typed fields by reading the DOM back — BEFORE submit, since
+  // a submit can navigate and wipe the values. Confirms same-origin fills; leaves
+  // unconfirmable cross-origin fills flagged verified:false.
+  await verifyVisionFills(filled);
 
   // Submit LAST, after the fields are filled.
   let submitted = false;
@@ -722,7 +982,16 @@ async function handleFillVision(args) {
     }
   }
 
-  return { filled, missed, submitted };
+  // Flag unverified synthetic typing so the agent knows to confirm — vision-typed
+  // fields (esp. cross-origin iframes) were typed but not read back. DOM-fallback
+  // fields are read-back verified (verified:true).
+  const unverified = filled.filter((f) => f.verified === false).map((f) => f.field);
+  const out = { filled, missed, submitted };
+  if (unverified.length) {
+    out.unverified = unverified;
+    out.note = `typed (unverified): ${unverified.length} field(s) were typed but a DOM read-back could NOT confirm the value landed — most likely a cross-origin iframe (unreadable from the page) but possibly a mis-target. Verify visually if it matters.`;
+  }
+  return out;
 }
 
 // FAST_DO — the most aggressive speed tier: ONE plain-language intent → a whole
@@ -1097,7 +1366,7 @@ async function refinePoint(target, xCss, yCss, full) {
 }
 
 // Same diagnostic-only set the extension enforces for macros — keep in sync.
-const DIAGNOSTIC_ONLY_STEPS = new Set(['fast_status', 'fast_batch', 'fast_scout', 'fast_point', 'fast_point_som', 'fast_fill_vision', 'fast_do', 'fast_locate']);
+const DIAGNOSTIC_ONLY_STEPS = new Set(['fast_status', 'fast_profile', 'fast_batch', 'fast_scout', 'fast_point', 'fast_point_som', 'fast_fill_vision', 'fast_do', 'fast_locate']);
 
 // --- Batch inter-step navigation re-bind (BUG-2) ---------------------------
 // LIVE-SMOKE BUG: in fast_batch, when an earlier step navigates the tab (e.g. a

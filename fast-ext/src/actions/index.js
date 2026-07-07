@@ -4,6 +4,7 @@ import { pressKey }        from './key.js';
 import { getText }         from './text.js';
 import { evaluate }        from './evaluate.js';
 import { clickXY, typeText, pressKeyChord, wheelScroll, dragXY } from './input.js';
+import { uploadFile }      from './upload.js';
 import { readConsole }     from './console.js';
 import { readNetwork }     from './network.js';
 import { waitForNetworkIdle } from './waitIdle.js';
@@ -137,6 +138,7 @@ async function runOne(action, args) {
   if (action === 'fast_key')        return pressKeyChord(args);
   if (action === 'fast_wheel')      return wheelScroll(args);
   if (action === 'fast_drag_xy')    return dragXY(args);
+  if (action === 'fast_upload')     return uploadFile(args);
   if (action === 'fast_console')    return readConsole(args);
   if (action === 'fast_network')    return readNetwork(args);
   if (action === 'fast_wait' && (args?.networkIdle || args?.domready)) return waitForNetworkIdle(args);

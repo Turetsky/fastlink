@@ -108,6 +108,7 @@ const VERB = {
   fast_fill_form: 'Filling form', fast_select_option: 'Selecting',
   fast_nav: 'Navigating', fast_reload: 'Reloading', fast_scroll: 'Scrolling',
   fast_wheel: 'Scrolling', fast_hover: 'Hovering', fast_drag: 'Dragging',
+  fast_upload: 'Uploading file',
   fast_wait: 'Waiting', fast_key: 'Pressing key', fast_tab: 'Switching tab',
   fast_switch: 'Switching tab', fast_list: 'Listing tabs', fast_close: 'Closing tab',
   fast_console: 'Reading console', fast_network: 'Reading network', fast_evaluate: 'Running script',

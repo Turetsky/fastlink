@@ -49,14 +49,14 @@ export const TOOLS = [
   },
   {
     name: 'fast_fill_vision',
-    description: 'VISION form-fill in ONE call: fills an entire form server-side, collapsing the per-field point→click→type loop (~15 round-trips) into a single tool call. A fast multimodal model (Gemini) does ALL the visual reading and locates every field (and the optional submit button) in ONE vision pass — you never screenshot the form and read it yourself — then each field is focused with a trusted real-mouse click and filled with trusted typing — so React/LWC/canvas/iframe inputs that ignore fast_fill all work. Use for visible on-screen forms, especially non-DOM ones where fast_fill_form can\'t reach. Pass `fields` as { "<field description>": "<value>" } (keys are plain-language descriptions of each input, e.g. "First Name input box"). Optional `submit`: a description of the submit/continue button to click after filling. Returns { filled:[{field,found,value}], missed:[descriptions not located], submitted:bool }. A description in `missed` was not visible — scroll it into view or reopen the relevant section and call again for those. Requires GEMINI_API_KEY.',
+    description: 'VISION form-fill in ONE call: fills an entire form server-side, collapsing the per-field point→click→type loop (~15 round-trips) into a single tool call. A fast multimodal model (Gemini) does ALL the visual reading and locates every field (and the optional submit button) in ONE vision pass — you never screenshot the form and read it yourself — then each field is focused with a trusted real-mouse click and filled with trusted typing — so React/LWC/canvas/iframe inputs that ignore fast_fill all work. Use for visible on-screen forms, especially non-DOM ones where fast_fill_form can\'t reach. Pass `fields` as { "<field description>": "<value>" } (keys are plain-language descriptions of each input, e.g. "First Name input box"). Optional `submit`: a description of the submit/continue button to click after filling. Returns { filled:[{field,found,value,verified,via}], missed:[descriptions not located], submitted:bool, unverified?:[fields], note? }. verified:true means the value was read back and held (DOM-fallback fields); verified:false means it was typed via synthetic CDP typing but NOT read back (cross-origin iframe values can\'t be confirmed) — confirm visually if it matters. Fields vision can\'t reach are retried via a DOM fill (via:"dom-fallback"). A description in `missed` was not visible — scroll it into view or reopen the relevant section and call again for those. Requires GEMINI_API_KEY.',
     inputSchema: {
       type: 'object',
       properties: {
         fields: { type: 'object', description: 'Map of field description → value to type, e.g. { "First Name input": "Jacob", "Email input": "a@b.com" }. Each key is a plain-language description of the input the vision model should locate.' },
         submit: { type: 'string', description: 'Optional description of the submit/continue button to click after all fields are filled, e.g. "the blue Sign up button". Omit (or null) to fill without submitting.' },
         refine: { type: 'boolean', description: 'Crop-zoom refine pass for small/dense fields to sharpen coordinates (default true). Set false for a single coarse locate pass.' },
-        freshCapture: { type: 'boolean', description: 'Force a new screenshot instead of reusing a recent pre-warmed capture (default false).' },
+        freshCapture: { type: 'boolean', description: 'Force a new screenshot instead of reusing a recent pre-warmed capture. DEFAULT TRUE for this tool — a stale cached frame can make fields locate off an old layout and type into nowhere. Pass false to opt back into warm reuse.' },
       },
       required: ['fields'],
     },
@@ -102,6 +102,17 @@ export const TOOLS = [
     inputSchema: { type: 'object', properties: {}, required: [] },
   },
   {
+    name: 'fast_profile',
+    description: 'Pin WHICH Chrome profile (install slot) this session drives when several are connected. Each profile has a label — "primary" (default), "secondary" (legacy), or a custom label set on its options page. Without a pin, calls go to the active slot ("primary") and other profiles are unreachable. Call once: install:"<label>" pins every later call there (survives broker reconnects); install:"auto" releases. Pinning a not-yet-connected label is allowed — calls error until that profile opens FastLink. fast_status shows connected slots (installs.*.connected) + current selectedInstall.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        install: { type: 'string', description: 'Slot label to pin to (e.g. "primary", "secondary", "work"), or "auto" to release. Lowercased, [a-z0-9_-].' },
+      },
+      required: ['install'],
+    },
+  },
+  {
     name: 'fast_prewarm',
     description: 'Turn ON background pre-warming for the next ~60s. While active, each page navigation triggers a silent scout + vision pre-pass (cached snapshot/visual map) so the FIRST fast_scout / fast_point / fast_fill_vision on a freshly-loaded page is near-instant. Pre-warming NEVER starts on its own — call this once when you are about to do a burst of page-driving work. Any subsequent tool call extends the window; it shuts off automatically 60s after your last tool. No browser action is taken — this only arms the warmer.',
     inputSchema: { type: 'object', properties: {}, required: [] },
@@ -123,7 +134,7 @@ export const TOOLS = [
   },
   {
     name: 'fast_click',
-    description: 'Click an element matching text/label/aria-label/placeholder. Matches are auto-ranked so visible-content matches beat aria-label matches, which beat tooltip-only (title) matches; and when text scores are close, real interactive CONTROLS (button/input/radio/checkbox/[role=button|radio|checkbox|option|menuitem|tab|switch|link]) are preferred over generic links or plain text — so a radio labelled "External" beats a link reading "External", and an "I agree" checkbox beats the policy link inside its label. The right control usually wins on its own. When that\'s not enough, narrow with role (e.g. "menuitem", "option", "button") or tag (e.g. "mat-option", "a"), or use index to pick the N-th match in document order. On a miss, the response includes diagnostics explaining why (hidden, behind aria-hidden, non-interactive, off-screen, cross-origin iframe, etc.) — read them before retrying (on very large pages these diagnostics may be partial/count-only, since heavy pages are now bounded rather than allowed to freeze). **Returns include a `snapshot` (items + content) so you can chain decisions without a separate fast_snapshot call — but it reflects the MATCH-TIME (pre-click) DOM (reused from the click\'s own element walk), NOT a fresh post-click capture. For state the click just produced (a dropdown it opened, a re-render), issue an explicit fast_snapshot or fast_wait. Opt out with noSnapshot:true.** Pass screenshot:true to also get a post-click visual.',
+    description: 'Click an element matching text/label/aria-label/placeholder. Matches are auto-ranked so visible-content matches beat aria-label matches, which beat tooltip-only (title) matches; and when text scores are close, real interactive CONTROLS (button/input/radio/checkbox/[role=button|radio|checkbox|option|menuitem|tab|switch|link]) are preferred over generic links or plain text — so a radio labelled "External" beats a link reading "External", and an "I agree" checkbox beats the policy link inside its label. The right control usually wins on its own. When that\'s not enough, narrow with role (e.g. "menuitem", "option", "button") or tag (e.g. "mat-option", "a"), or use index to pick the N-th match in document order. On a miss, the response includes diagnostics explaining why (hidden, behind aria-hidden, non-interactive, off-screen, cross-origin iframe, etc.) — read them before retrying (on very large pages these diagnostics may be partial/count-only, since heavy pages are now bounded rather than allowed to freeze). **Returns include a FRESH POST-click `snapshot` (items + content): a re-walk taken AFTER the click settles, so a dropdown it opened or a re-render it triggered IS reflected — chain decisions off it without a separate fast_snapshot. Opt out with noSnapshot:true. On a navigating click (or a page too heavy to re-serialize in time) it falls back to the pre-click capture, flagged `snapshotStale:true`; a navigating click is additionally flagged so you re-snapshot after the new page loads.** Pass screenshot:true to also get a post-click visual.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -133,13 +144,14 @@ export const TOOLS = [
         index: { type: 'number', description: 'Pick the N-th match (0-based) in stable DOCUMENT order (deterministic across re-renders), NOT rank order. Omit to take the best-ranked match. Use when the best-ranked match is still wrong.' },
         screenshot: { type: 'boolean', description: 'If true, capture a screenshot after clicking and return its /tmp path in the result.' },
         screenshotFormat: { type: 'string', enum: ['png', 'jpeg'], description: 'Format for the inline screenshot (default png).' },
+        noSnapshot: { type: 'boolean', description: 'If true, skip the fresh post-click snapshot and return just the action outcome.' },
       },
       required: ['text'],
     },
   },
   {
     name: 'fast_fill',
-    description: 'Fill input/textarea/contenteditable by label/placeholder/name. An EXACT label/aria-label/placeholder/name match is preferred over a substring match, so "Email" won\'t lose to "Email confirmation". Replaces existing value by default; pass append: true to keep and add to existing. When the same label repeats, disambiguate with `index` (N-th match in document order), `section` (scope to the group under a matching heading/legend), or `near` (scope to the field nearest matching context text). Returns include a `snapshot` (opt out with noSnapshot:true) that reflects the MATCH-TIME (pre-fill) DOM, reused from the fill\'s own field walk — NOT a fresh post-fill capture; for a post-fill re-render issue an explicit fast_snapshot or fast_wait. On very large pages a miss\'s diagnostics may be partial/count-only (heavy pages are bounded, not frozen). The input/change events are dispatched composed:true, so they cross shadow boundaries and validate correctly on web-component / Angular-Material / custom-element design systems.',
+    description: 'Fill input/textarea/contenteditable by label/placeholder/name. An EXACT label/aria-label/placeholder/name match is preferred over a substring match, so "Email" won\'t lose to "Email confirmation". Replaces existing value by default; pass append: true to keep and add to existing. When the same label repeats, disambiguate with `index` (N-th match in document order), `section` (scope to the group under a matching heading/legend), or `near` (scope to the field nearest matching context text). Returns include a FRESH POST-fill `snapshot` (opt out with noSnapshot:true): a re-walk taken AFTER the fill settles, so a post-fill re-render IS reflected — chain off it without a separate fast_snapshot (falls back to the pre-fill capture, flagged `snapshotStale:true`, only if the page is too heavy to re-serialize). On very large pages a miss\'s diagnostics may be partial/count-only (heavy pages are bounded, not frozen). The input/change events are dispatched composed:true, so they cross shadow boundaries and validate correctly on web-component / Angular-Material / custom-element design systems.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -149,6 +161,7 @@ export const TOOLS = [
         index: { type: 'number', description: 'When multiple fields match, pick the N-th (0-based) in stable DOCUMENT order. Omit to take the best/exact match.' },
         section: { type: 'string', description: 'Scope the field match to the group of fields under a heading/legend/fieldset whose text matches this (e.g. "Billing address"). Use when the same label appears in multiple sections.' },
         near: { type: 'string', description: 'Scope the field match to the field nearest this context text on the page. Use to disambiguate repeated labels by surrounding content.' },
+        noSnapshot: { type: 'boolean', description: 'If true, skip the fresh post-fill snapshot and return just the action outcome.' },
       },
       required: ['match', 'value'],
     },
@@ -250,17 +263,19 @@ export const TOOLS = [
         field: { type: 'string', description: 'Single-dropdown field identifier — label text, aria-label, name, or id (case-insensitive). Omit when using `selections`.' },
         option: { type: 'string', description: 'Option text to select (case-insensitive). Exact match preferred. Used with `field`.' },
         selections: { type: 'object', description: 'BATCH map of field → option to set many dropdowns in one call, e.g. { "Country": "United States", "State": "California", "Timezone": "PST" }. Keys match label/aria-label/name/placeholder (case-insensitive); values match option text or value. Much faster than one call per dropdown.' },
+        noSnapshot: { type: 'boolean', description: 'If true, skip the fresh post-selection snapshot and return just the action outcome.' },
       },
     },
   },
   {
     name: 'fast_screenshot',
-    description: 'Capture a screenshot of the active Chrome tab — for VISUAL VERIFICATION only (confirm something looks right), NOT for reading or parsing page text/structure. To READ a page use fast_snapshot (structured DOM, instant); to LOCATE a visual/non-DOM element use fast_point or fast_locate (Gemini returns the coordinates). Do NOT screenshot a page and read it yourself — that is slow and token-heavy. Saves as PNG to the OS temp dir and returns the file path. Use Read on the path to view the image.',
+    description: 'Capture a screenshot of the active Chrome tab — for VISUAL VERIFICATION only (confirm something looks right), NOT for reading or parsing page text/structure. To READ a page use fast_snapshot (structured DOM, instant); to LOCATE a visual/non-DOM element use fast_point or fast_locate (Gemini returns the coordinates). Do NOT screenshot a page and read it yourself — that is slow and token-heavy. Saves as PNG to the OS temp dir and returns the file path. Use Read on the path to view the image. Pass fresh:true if a recent screenshot looked stale/identical after a focus/navigation change — it reads the live window surface via CDP instead of the compositor frame chrome.tabs.captureVisibleTab may re-serve.',
     inputSchema: {
       type: 'object',
       properties: {
         format: { type: 'string', enum: ['png', 'jpeg'], description: 'Image format (default png)' },
         quality: { type: 'number', description: 'JPEG quality 0-100 (default 90, ignored for PNG)' },
+        fresh: { type: 'boolean', description: 'Force a fresh frame via CDP (live window surface) instead of captureVisibleTab, which can re-serve a stale composited frame across focus/nav changes. Use when a recent screenshot looked unchanged though the page changed.' },
       },
     },
   },
@@ -312,6 +327,7 @@ export const TOOLS = [
         to: { type: 'string', description: 'top, bottom, or a percentage like "50%"' },
         pixels: { type: 'number', description: 'Pixels to scroll (positive=down, negative=up)' },
         selector: { type: 'string', description: 'Optional CSS selector for the scroll container. If omitted, auto-detects by walking up from viewport center, then falling back to the largest scrollable element.' },
+        noSnapshot: { type: 'boolean', description: 'If true, skip the fresh post-scroll snapshot and return just the action outcome.' },
       },
     },
   },
@@ -375,19 +391,20 @@ export const TOOLS = [
   },
   {
     name: 'fast_hover',
-    description: 'Hover over an element matching text/label/aria-label/placeholder. Fires mouseenter/mouseover/mousemove. Useful for triggering tooltips, hover-only menus, lazy hover-loaded content. Returns include a `snapshot` (opt out with noSnapshot:true), but it reflects the MATCH-TIME (pre-hover) DOM, reused from the hover\'s own element walk — so a tooltip/menu the hover JUST revealed will NOT be in it; issue an explicit fast_snapshot (or fast_wait for its text) to capture what appeared.',
+    description: 'Hover over an element matching text/label/aria-label/placeholder. Fires mouseenter/mouseover/mousemove. Useful for triggering tooltips, hover-only menus, lazy hover-loaded content. Returns include a FRESH POST-hover `snapshot` (opt out with noSnapshot:true): a re-walk taken AFTER the hover settles, so a tooltip/menu it JUST revealed IS captured — fast_wait for its text if the tooltip is slow to appear.',
     inputSchema: {
       type: 'object',
       properties: {
         text: { type: 'string', description: 'Text/label/aria-label/placeholder substring (case-insensitive)' },
         index: { type: 'number', description: 'Pick the N-th match (0-based) in document order when text is ambiguous' },
+        noSnapshot: { type: 'boolean', description: 'If true, skip the fresh post-hover snapshot and return just the action outcome.' },
       },
       required: ['text'],
     },
   },
   {
     name: 'fast_drag',
-    description: 'Drag from one element to another (or to coordinates). Synthesizes mousedown→mousemove(s)→mouseup, which works for sliders, sortable lists, canvas drawing, and most JS-handled drag UIs. May NOT trigger native HTML5 drag-and-drop handlers (those listen to DragEvent — different protocol). Returns include a `snapshot` (opt out with noSnapshot:true) that reflects the MATCH-TIME (pre-drag) DOM, reused from the drag\'s own element walk — NOT a fresh post-drag capture; issue an explicit fast_snapshot for the result of the drag.',
+    description: 'Drag from one element to another (or to coordinates). Synthesizes mousedown→mousemove(s)→mouseup, which works for sliders, sortable lists, canvas drawing, and most JS-handled drag UIs. May NOT trigger native HTML5 drag-and-drop handlers (those listen to DragEvent — different protocol). Returns include a FRESH POST-drag `snapshot` (opt out with noSnapshot:true): a re-walk taken AFTER the drag settles, so the result of the drag IS reflected (falls back to the pre-drag capture, flagged `snapshotStale:true`, only if the page is too heavy to re-serialize).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -397,13 +414,14 @@ export const TOOLS = [
         toIndex: { type: 'number', description: 'Pick the N-th to-match (0-based)' },
         toX: { type: 'number', description: 'Target X coordinate (use with toY instead of "to")' },
         toY: { type: 'number', description: 'Target Y coordinate (use with toX instead of "to")' },
+        noSnapshot: { type: 'boolean', description: 'If true, skip the fresh post-drag snapshot and return just the action outcome.' },
       },
       required: ['from'],
     },
   },
   {
     name: 'fast_fill_form',
-    description: 'Fill multiple fields in one call (saves N round-trips for large forms). Pass a { fields } object where keys are label/placeholder/name/aria-label substrings and values are the strings to fill. ALSO sets native <select> dropdowns: when a matched field is a <select>, the value is matched against option TEXT or VALUE and the option is selected (not typed) — so for a form with many dropdowns + inputs you can fill it ALL in one call. (Custom react-select/ARIA dropdowns are not native <select>s — use fast_select_option, which has a batch `selections` map, for those.) A field value may instead be an object { value, name, index, exact } to disambiguate collisions: `name` (or `exact:true`) matches the input\'s exact `name` attribute instead of a substring, and `index` (0-based, N-th match in document order) picks which field when labels/names repeat (e.g. two product slots). Returns a per-field results map showing which were filled and which were not found, plus a `snapshot` (opt out with noSnapshot:true) that reflects the MATCH-TIME (pre-fill) DOM, reused from the fill\'s own field walk — NOT a fresh post-fill capture; for a post-fill re-render issue an explicit fast_snapshot or fast_wait. A field filled while not visible (display:none/no offsetParent) but still submittable is flagged `filledButNotVisible:true`. With verify:true, each field is re-read after filling and any whose value reverted (e.g. wiped by an async AJAX re-render) is flagged `reverted:true` with its `currentValue`, and a top-level `reverted` array lists their keys. Value-change events (input/change) are dispatched composed:true, so fields validate correctly across shadow boundaries on web-component / Angular-Material / custom-element design systems.',
+    description: 'Fill multiple fields in one call (saves N round-trips for large forms). Pass a { fields } object where keys are label/placeholder/name/aria-label substrings and values are the strings to fill. ALSO sets native <select> dropdowns: when a matched field is a <select>, the value is matched against option TEXT or VALUE and the option is selected (not typed) — so for a form with many dropdowns + inputs you can fill it ALL in one call. (Custom react-select/ARIA dropdowns are not native <select>s — use fast_select_option, which has a batch `selections` map, for those.) A field value may instead be an object { value, name, index, exact } to disambiguate collisions: `name` (or `exact:true`) matches the input\'s exact `name` attribute instead of a substring, and `index` (0-based, N-th match in document order) picks which field when labels/names repeat (e.g. two product slots). Returns a per-field results map showing which were filled and which were not found, plus a FRESH POST-fill `snapshot` (opt out with noSnapshot:true): a re-walk taken AFTER the fills settle, so a post-fill re-render IS reflected (falls back to the pre-fill capture, flagged `snapshotStale:true`, only if the page is too heavy to re-serialize). A field filled while not visible (display:none/no offsetParent) but still submittable is flagged `filledButNotVisible:true`. With verify:true, each field is re-read after filling and any whose value reverted (e.g. wiped by an async AJAX re-render) is flagged `reverted:true` with its `currentValue`, and a top-level `reverted` array lists their keys. Value-change events (input/change) are dispatched composed:true, so fields validate correctly across shadow boundaries on web-component / Angular-Material / custom-element design systems.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -411,6 +429,7 @@ export const TOOLS = [
         append: { type: 'boolean', description: 'If true, append to existing field values instead of replacing.' },
         stopOnError: { type: 'boolean', description: 'If true, stop on the first missing/failed field. Default: keep going so you see all misses at once.' },
         verify: { type: 'boolean', description: 'If true, re-read each field after filling and flag any whose value did not stick (reverted by an async re-render) as reverted:true, plus a top-level `reverted` array of their keys.' },
+        noSnapshot: { type: 'boolean', description: 'If true, skip the fresh post-fill snapshot and return just the per-field results.' },
       },
       required: ['fields'],
     },
@@ -522,14 +541,29 @@ export const TOOLS = [
   },
   {
     name: 'fast_type',
-    description: 'Trusted typing into whatever element currently has focus, via CDP Input.insertText — React/LWC accept it because it\'s a real input event (unlike setting .value). Does NOT target a selector; it goes to the focused element, so focus first (e.g. fast_click_xy on the field\'s coordinates). Pairs with fast_click_xy: read field coords via fast_evaluate getBoundingClientRect, fast_click_xy to focus, then fast_type to enter the text. ERRORS with {error:"fast_type: no editable element focused — click/focus the field first"} if nothing editable has focus (so a mis-aimed focus click no longer silently types into the void). Pass clear:true to REPLACE a pre-filled value instead of appending to it (it select-all + deletes the field first — use this when a field has a default like "API key 4"). The return echoes where the text landed: into:{tag,type,label,value}, so you can confirm the right field got it.',
+    description: 'Trusted typing into whatever element currently has focus, via CDP Input.insertText — React/LWC accept it because it\'s a real input event (unlike setting .value). Does NOT target a selector; it goes to the focused element, so focus first (e.g. fast_click_xy on the field\'s coordinates). Pairs with fast_click_xy: read field coords via fast_evaluate getBoundingClientRect, fast_click_xy to focus, then fast_type to enter the text. ERRORS with {error:"fast_type: no editable element focused — click/focus the field first"} if nothing editable has focus (so a mis-aimed focus click no longer silently types into the void). Pass clear:true to REPLACE a pre-filled value instead of appending to it (it select-all + deletes the field first — use this when a field has a default like "API key 4"). Pass force:true (alias allowIframe) to BYPASS that editable-focus guard: the guard only inspects the TOP frame, so for an input inside a CROSS-ORIGIN iframe (e.g. appleid.apple.com embedded in account.apple.com) the focused element looks like the <iframe> and the guard wrongly refuses — yet CDP insertText DOES reach the inner input. This is the NO-GEMINI lifeline for cross-origin forms: fast_click_xy on cached coords to focus, then fast_type {force:true} to fill. Only use force right after a click that focused the field. The return echoes where the text landed: into:{tag,type,label,value} (in force mode across an iframe this echoes the <iframe>; expected), so you can confirm the right field got it.',
     inputSchema: {
       type: 'object',
       properties: {
         text: { type: 'string', description: 'Text to insert into the currently-focused element.' },
         clear: { type: 'boolean', description: 'If true, select-all + delete the focused field before typing so the value is REPLACED, not appended (default false). Use for fields with a pre-filled default.' },
+        force: { type: 'boolean', description: 'If true, skip the "no editable element focused" guard so typing reaches an input inside a CROSS-ORIGIN iframe that a prior fast_click_xy already focused (the guard can\'t see into cross-origin frames). Alias: allowIframe. Use only right after a focusing click.' },
       },
       required: ['text'],
+    },
+  },
+  {
+    name: 'fast_upload',
+    description: 'Upload local file(s) into a file <input> WITHOUT the OS file-picker dialog (which browser automation cannot drive — clicking the picker just opens a native window no script can fill). Sets the files directly on the input via the trusted CDP DOM domain and fires input/change so the page reacts as if the user picked them. WINDOWS-FRIENDLY paths: pass a Windows path (C:\\Users\\you\\pic.png), a WSL mount path (/mnt/c/Users/you/pic.png), or a native WSL path (/home/you/file.pdf) — the server resolves it to a path the Chrome (Windows) process can open (native WSL paths become \\\\wsl.localhost\\<distro>\\… automatically) and verifies the file EXISTS before sending. Targeting: by default it uses the page\'s only/first <input type=file>; pass `selector` (CSS selector for the input or a wrapper containing it), `text` (substring of the input\'s label/name/id/aria-label/nearby text), or `index` (0-based) to pick a specific one. Use `path` for one file or `paths` for several (the input must have the `multiple` attribute). Requires "Advanced control" (CDP) enabled — same as fast_click_xy. Returns { uploaded, files, accepted:[{name,size,type}], input:{name,id,count} } so you can confirm the file landed. Only the TOP document is searched (not cross-origin iframes).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Path to ONE file to upload. Windows (C:\\Users\\...), WSL mount (/mnt/c/...), or native WSL (/home/...). The server verifies it exists before sending.' },
+        paths: { type: 'array', items: { type: 'string' }, description: 'Paths to MULTIPLE files (the target file input must have the `multiple` attribute). Use instead of `path`.' },
+        selector: { type: 'string', description: 'Optional CSS selector for the file input (or a wrapper element that contains one). Use when the page has more than one file input.' },
+        text: { type: 'string', description: 'Optional substring of the input\'s label / name / id / aria-label / nearby text, to pick a specific file input.' },
+        index: { type: 'number', description: 'Optional 0-based index to pick the N-th <input type=file> when several are present. Default: the first/only one.' },
+      },
     },
   },
 ];

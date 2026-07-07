@@ -5,10 +5,32 @@ import { log } from './lifecycle.js';
 const REQUEST_TIMEOUT_MS = 30_000;
 const pending = new Map();
 
-export function dispatchCall(mcpClient, mcpId, action, args) {
-  const ext = state.getExtensionSocket();
-  if (!ext || ext.readyState !== 1) {
-    return reply(mcpClient, mcpId, { error: 'Chrome extension not connected.' });
+export function dispatchCall(mcpClient, mcpId, action, args, install) {
+  // `install` (optional) pins this call to a specific install slot's ext socket.
+  // When set, routing is DETERMINISTIC: we never fall back to another slot —
+  // an unreachable target must surface as a clear error, not silently land on
+  // `primary` (BUG-5). When absent, fall through to the auto resolver
+  // (ACTIVE-then-any-connected).
+  let ext;
+  if (install) {
+    if (!state.knownInstalls().includes(install)) {
+      return reply(mcpClient, mcpId, {
+        error: `Unknown install "${install}". Known installs: ${state.knownInstalls().join(', ')}.`,
+      });
+    }
+    ext = state.getSocketForInstall(install);
+    if (!ext || ext.readyState !== 1) {
+      return reply(mcpClient, mcpId, {
+        error: `Install "${install}" is not connected — open/reload FastLink in that Chrome profile, or switch to a connected slot with fast_profile.`,
+        routedInstall: null,
+        installs: state.snapshot().installs,
+      });
+    }
+  } else {
+    ext = state.getExtensionSocket();
+    if (!ext || ext.readyState !== 1) {
+      return reply(mcpClient, mcpId, { error: 'Chrome extension not connected.' });
+    }
   }
   const extId = randomUUID();
   const timer = setTimeout(() => {

@@ -1,17 +1,16 @@
-// Per-install slots. FastLink supports two NEUTRAL install slots that can run
-// side by side (e.g. two Chrome profiles on one machine), each bound to its own
-// broker port so they never collide. The broker accepts both connections
-// simultaneously and tracks them as separate slots; tools route to whichever
-// install is "active" (FASTLINK_ACTIVE env var, defaults to the first slot,
-// 'primary').
-//
-// EXT_PORTS is the single source of truth for the slot ids + ports. Everything
-// else (known installs, the per-port default, status output) DERIVES from its
-// keys, so the names stay neutral and in sync — no personal ids baked in.
+// Slots keyed by arbitrary `hello` label → N profiles concurrent. Route to
+// FASTLINK_ACTIVE (default 'primary') unless a session pins via fast_profile.
+// EXT_PORTS = fixed listener ports. 'primary' 9876 = shared port for all custom
+// labels (demuxed by label); 'secondary' 9877 = legacy. Port key = default
+// install for no/blank-hello builds. Custom labels learned from `hello` → `slots`.
 export const EXT_PORTS = { primary: 9876, secondary: 9877 };
 
-const KNOWN_INSTALLS = Object.keys(EXT_PORTS);
-const ACTIVE = (process.env.FASTLINK_ACTIVE || KNOWN_INSTALLS[0]).toLowerCase();
+const LISTENER_INSTALLS = Object.keys(EXT_PORTS);
+const ACTIVE = (process.env.FASTLINK_ACTIVE || LISTENER_INSTALLS[0]).toLowerCase();
+
+// A slot's incumbent is "live" if it connected or pinged within this window.
+// > the extension's 20s app-ping cycle so one missed ping doesn't read as dead.
+const LIVENESS_MS = 30_000;
 
 const slots = new Map(); // installId -> { ws, lastConnectedAt, lastDisconnectedAt, lastPingAt, totalConnections }
 
@@ -28,7 +27,9 @@ const ago = (t) => t ? `${Math.round((Date.now() - t) / 1000)}s ago` : 'never';
 
 export const state = {
   getActiveInstall() { return ACTIVE; },
-  knownInstalls() { return [...KNOWN_INSTALLS]; },
+  // Fixed listener slots ∪ every custom label seen live this lifetime (tracked
+  // in `slots`). Listeners first. Gates routing (router.js) + status output.
+  knownInstalls() { return [...new Set([...LISTENER_INSTALLS, ...slots.keys()])]; },
 
   setExtensionSocket(installId, ws) {
     const s = ensureSlot(installId);
@@ -76,6 +77,20 @@ export const state = {
     const s = slots.get(installId);
     return s?.ws || null;
   },
+  // Is this install slot held by a LIVE socket right now? "Live" = OPEN and
+  // showing recent activity (connected or app-pinged within LIVENESS_MS). Used
+  // by extBridge to tell a same-slot COLLISION (two live profiles → reject the
+  // newcomer) from a SERVICE-WORKER RESPAWN (stale prev socket → adopt the
+  // newcomer). The window is generous (> one 20s extension ping cycle) so a
+  // briefly-laggy healthy incumbent is never mistaken for dead and evicted —
+  // we bias toward protecting a working profile over fast respawn adoption (a
+  // truly-dead half-open socket still ages out and gets replaced).
+  isInstallLive(installId) {
+    const s = slots.get(installId);
+    if (!s?.ws || s.ws.readyState !== 1) return false;
+    const last = Math.max(s.lastConnectedAt || 0, s.lastPingAt || 0);
+    return Date.now() - last < LIVENESS_MS;
+  },
   // Returns every connected socket — used to broadcast badge updates so both
   // installs' badges reflect the same client count.
   *allConnectedSockets() {
@@ -89,7 +104,7 @@ export const state = {
   },
   snapshot() {
     const installs = {};
-    for (const id of KNOWN_INSTALLS) {
+    for (const id of state.knownInstalls()) {
       const s = slots.get(id);
       installs[id] = {
         connected: !!(s?.ws && s.ws.readyState === 1),

@@ -51,7 +51,7 @@ export function startMcpBridge() {
     ws.on('message', (data) => {
       let msg;
       try { msg = JSON.parse(data.toString()); } catch { return; }
-      if (msg.type === 'call') return dispatchCall(ws, msg.id, msg.action, msg.args);
+      if (msg.type === 'call') return dispatchCall(ws, msg.id, msg.action, msg.args, msg.install);
       if (msg.type === 'status') {
         ws.send(JSON.stringify({ type: 'status', id: msg.id, data: state.snapshot() }));
       }

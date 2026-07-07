@@ -1,6 +1,8 @@
 // Scout brain — turns a page digest + Claude's intent into an action plan,
-// using a fast model (Gemini Flash via OpenRouter) instead of burning Claude
-// round-trips on page discovery.
+// using a fast model (Gemini Flash, direct Generative Language API) instead of
+// burning Claude round-trips on page discovery. Transient Gemini failures (503
+// UNAVAILABLE / 429) are retried with backoff and can fall back to OpenRouter —
+// see callModelParts / callGemini / callOpenRouter below.
 //
 // The digest is whatever fast_snapshot already produces: items[] with stable
 // `i` ids (resolvable by fast_click/fast_fill), labels, roles — walked across
@@ -13,7 +15,11 @@
 //   2. overlayIntent(map)   — map the intent onto the cached page map. Tiny,
 //      fast, the only call on the critical path once the page map is warm.
 import { request as httpsRequest } from 'https';
-import { SCOUT_ENABLED, GEMINI_API_KEY, GEMINI_MODEL } from './config.js';
+import {
+  SCOUT_ENABLED, GEMINI_API_KEY, GEMINI_MODEL,
+  OPENROUTER_API_KEY, OPENROUTER_BASE_URL, OPENROUTER_MODEL, VISION_FALLBACK_ENABLED,
+  OPENROUTER_CLAUDE_MODEL, VISION_FALLBACK2_ENABLED,
+} from './config.js';
 import { log } from './log.js';
 
 // POST JSON via Node's built-in https module instead of the global fetch.
@@ -21,9 +27,12 @@ import { log } from './log.js';
 // where the global fetch is bound to a network session that isn't initialized
 // for utility processes and throws a bare "fetch failed". Node's https module
 // uses core networking and behaves identically under plain Node and Electron.
-// Resolves with the parsed JSON body; rejects on non-2xx with a trimmed body
-// (same error shape callers relied on before).
-function httpsPostJson(url, headers, bodyObj) {
+// Resolves with the parsed JSON body; rejects on non-2xx with a trimmed body.
+// Rejected errors carry a numeric `.status` so the retry layer can decide what's
+// retryable: HTTP status for a server response, 0 for network errors/timeouts
+// (always retryable), -1 for a 2xx body that wasn't valid JSON (not retryable).
+// `label` names the provider in the error string (e.g. "gemini", "openrouter").
+function httpsPostJson(url, headers, bodyObj, label = 'gemini') {
   const payload = JSON.stringify(bodyObj);
   return new Promise((resolve, reject) => {
     const u = new URL(url);
@@ -42,20 +51,63 @@ function httpsPostJson(url, headers, bodyObj) {
         res.on('end', () => {
           const status = res.statusCode || 0;
           if (status < 200 || status >= 300) {
-            reject(new Error(`scout gemini ${status}: ${data.slice(0, 300)}`));
+            const err = new Error(`scout ${label} ${status}: ${data.slice(0, 300)}`);
+            err.status = status;
+            reject(err);
             return;
           }
           try { resolve(JSON.parse(data)); }
-          catch (e) { reject(new Error(`scout gemini bad JSON: ${e.message}`)); }
+          catch (e) {
+            const err = new Error(`scout ${label} bad JSON: ${e.message}`);
+            err.status = -1;
+            reject(err);
+          }
         });
       },
     );
-    req.on('error', reject);
-    // Bound the request — a slow/stuck Gemini call must never hang the tool call.
-    req.setTimeout(GEMINI_TIMEOUT_MS, () => req.destroy(new Error(`scout gemini timed out (${GEMINI_TIMEOUT_MS}ms)`)));
+    req.on('error', (e) => { if (e.status === undefined) e.status = 0; reject(e); });
+    // Bound the request — a slow/stuck call must never hang the tool call.
+    req.setTimeout(GEMINI_TIMEOUT_MS, () => req.destroy(new Error(`scout ${label} timed out (${GEMINI_TIMEOUT_MS}ms)`)));
     req.write(payload);
     req.end();
   });
+}
+
+// ── Retry / backoff tuning (transient Gemini failures) ──
+// Gemini 503 UNAVAILABLE ("high demand") and 429 RESOURCE_EXHAUSTED are
+// transient; so are network errors and timeouts. Retry those with exponential
+// backoff + jitter; never retry non-retryable 4xx (400/401/403/404) or a bad
+// JSON body. Bounded so total added latency stays modest (~0.4s+0.8s+1.6s ≈ 2.8s
+// of backoff across 4 attempts, plus per-attempt request time).
+const RETRY_ATTEMPTS = 4;        // total tries (1 initial + 3 retries)
+const RETRY_BASE_MS = 400;       // backoff before the 1st retry
+const RETRY_MAX_MS = 3_000;      // cap on any single backoff
+const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504]);
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+function isRetryable(err) {
+  const s = err && err.status;
+  if (s === 0) return true;              // network error / timeout
+  return RETRYABLE_STATUS.has(s);        // transient server statuses only
+}
+
+// Run `fn` (a single provider call) with retry+backoff on transient failures.
+// Throws the last error once attempts are exhausted or the error is terminal.
+async function withRetry(fn, label) {
+  let lastErr;
+  for (let attempt = 1; attempt <= RETRY_ATTEMPTS; attempt++) {
+    try { return await fn(); }
+    catch (e) {
+      lastErr = e;
+      if (!isRetryable(e) || attempt === RETRY_ATTEMPTS) break;
+      const backoff = Math.min(RETRY_MAX_MS, RETRY_BASE_MS * 2 ** (attempt - 1));
+      const wait = backoff / 2 + Math.random() * (backoff / 2); // jitter
+      log(`scout ${label} attempt ${attempt}/${RETRY_ATTEMPTS} failed (${e.status ?? 'err'}); retrying in ${Math.round(wait)}ms`);
+      await sleep(wait);
+    }
+  }
+  throw lastErr;
 }
 
 const pageMapCache = new Map(); // url -> { hash, map }
@@ -314,8 +366,6 @@ async function overlayIntent(map, intent, slim, saved) {
   };
 }
 
-// Direct Generative Language API. AQ.-format keys authenticate via the
-// x-goog-api-key header; responseMimeType pins JSON output.
 // Safety net: coerce common arg-name slips so steps run as-is. The planner
 // occasionally copies fast_fill's `match` onto a fast_click; map it to `text`.
 function normalizeSteps(steps) {
@@ -334,12 +384,82 @@ async function callModel(system, user, maxTokens) {
   return callModelParts({ system, parts: [{ text: user }], maxTokens });
 }
 
-// Core Generative Language API call. `parts` is the raw user-content parts
-// array, so callers can mix text + inlineData (image) parts. `system` is
+// Core model call for every scout/vision tier. `parts` is the raw user-content
+// parts array, so callers can mix text + inlineData (image) parts. `system` is
 // optional (multimodal locate doesn't need a separate system instruction).
-// AQ.-format keys authenticate via the x-goog-api-key header; responseMimeType
-// pins JSON output. Shared fetch/error/JSON handling for every scout call.
+//
+// Resilience — THREE provider tiers, tried in order, each retried with backoff on
+// transient failures (503/429/network/timeout):
+//   Tier 1: direct Gemini (Generative Language API).
+//   Tier 2: OpenRouter google/gemini-2.5-pro — gated on FASTLINK_VISION_FALLBACK.
+//   Tier 3: a NON-Gemini model (Claude via OpenRouter) — gated on
+//           FASTLINK_VISION_FALLBACK2. This is provider DIVERSITY: tiers 1+2 are
+//           the same Gemini family, so a Google-wide outage takes out both; a
+//           Claude tier survives it.
+// We only descend to the next tier on a TRANSIENT failure (isRetryable). A
+// non-retryable 4xx (e.g. a bad key) stops immediately — the next tier would fail
+// the same way, and we don't want to mask a config error. After all configured
+// tiers are exhausted we surface one error explaining the cause, the retry count,
+// and which tiers were tried — never a raw 503.
 async function callModelParts({ system, parts, maxTokens }) {
+  const errs = [];
+  // Tier 1 — direct Gemini.
+  try {
+    return safeJson(await withRetry(() => callGemini({ system, parts, maxTokens }), 'gemini'));
+  } catch (e) {
+    errs.push(e);
+    if (!isRetryable(e)) throw new Error(exhaustedMessage(errs));
+  }
+  // Tier 2 — OpenRouter Gemini (same family).
+  if (VISION_FALLBACK_ENABLED) {
+    try {
+      log(`scout: gemini exhausted after ${RETRY_ATTEMPTS} attempts; falling back to OpenRouter ${OPENROUTER_MODEL} (tier 2)`);
+      return safeJson(await withRetry(() => callOpenRouterModel(OPENROUTER_MODEL, { system, parts, maxTokens }), 'openrouter'));
+    } catch (e) {
+      errs.push(e);
+      if (!isRetryable(e)) throw new Error(exhaustedMessage(errs));
+    }
+  }
+  // Tier 3 — Claude via OpenRouter (provider diversity; survives a full Gemini outage).
+  if (VISION_FALLBACK2_ENABLED) {
+    try {
+      log(`scout: gemini tiers exhausted; falling back to Claude ${OPENROUTER_CLAUDE_MODEL} (tier 3)`);
+      return safeJson(await withRetry(() => callOpenRouterModel(OPENROUTER_CLAUDE_MODEL, { system, parts, maxTokens }, 'claude'), 'claude'));
+    } catch (e) {
+      errs.push(e);
+    }
+  }
+  throw new Error(exhaustedMessage(errs));
+}
+
+// Build the user-facing error after all tiers/retries are exhausted, naming the
+// likely cause, the attempt count, and which provider tiers were tried — instead
+// of echoing a raw 503 body. `errs[0]` is the primary (Gemini) failure.
+function exhaustedMessage(errs) {
+  const primary = errs[0] || {};
+  const s = primary.status;
+  const tiers = ['Gemini direct'];
+  if (VISION_FALLBACK_ENABLED) tiers.push(`OpenRouter ${OPENROUTER_MODEL}`);
+  if (VISION_FALLBACK2_ENABLED) tiers.push(`Claude ${OPENROUTER_CLAUDE_MODEL}`);
+  const tierNote = tiers.length > 1 ? ` Tried ${tiers.length} provider tiers (${tiers.join(' → ')}); all failed.` : '';
+  const hint = (!VISION_FALLBACK_ENABLED && !VISION_FALLBACK2_ENABLED)
+    ? ' Set OPENROUTER_API_KEY to enable the OpenRouter + Claude fallback tiers.'
+    : '';
+  let head;
+  if (s === 503) head = `scout vision failed: Gemini is overloaded (503 UNAVAILABLE, "high demand") — retried ${RETRY_ATTEMPTS}× with backoff and it stayed unavailable.`;
+  else if (s === 429) head = `scout vision failed: Gemini rate-limited (429 RESOURCE_EXHAUSTED) — retried ${RETRY_ATTEMPTS}× with backoff.`;
+  else if (s === 0) head = `scout vision failed: network error/timeout reaching Gemini — retried ${RETRY_ATTEMPTS}×.`;
+  else head = `scout vision failed after ${RETRY_ATTEMPTS} attempt(s): ${primary.message || 'unknown error'}`;
+  // If a fallback tier failed with a different error, surface it too.
+  const last = errs[errs.length - 1];
+  const fbNote = (errs.length > 1 && last && last !== primary) ? ` Last fallback error: ${last.message}.` : '';
+  return head + tierNote + fbNote + hint;
+}
+
+// Primary provider: direct Generative Language API. AQ.-format keys authenticate
+// via the x-goog-api-key header; responseMimeType pins JSON output. Resolves to
+// the raw model text (JSON string); the caller parses via safeJson.
+function callGemini({ system, parts, maxTokens }) {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
   const body = {
     contents: [{ role: 'user', parts }],
@@ -351,13 +471,53 @@ async function callModelParts({ system, parts, maxTokens }) {
     },
   };
   if (system) body.systemInstruction = { parts: [{ text: system }] };
-  const data = await httpsPostJson(
+  return httpsPostJson(
     url,
     { 'Content-Type': 'application/json', 'x-goog-api-key': GEMINI_API_KEY },
     body,
-  );
-  const content = (data?.candidates?.[0]?.content?.parts || []).map((p) => p.text || '').join('') || '{}';
-  return safeJson(content);
+    'gemini',
+  ).then((data) => (data?.candidates?.[0]?.content?.parts || []).map((p) => p.text || '').join('') || '{}');
+}
+
+// Fallback provider: OpenRouter's OpenAI-compatible /chat/completions. Maps the
+// Gemini `parts` shape to OpenAI message content: {text} → {type:"text"},
+// {inlineData:{mimeType,data}} → {type:"image_url", image_url:{url:data-URI}}.
+// `system` becomes a system message; response_format pins JSON output. `model` is
+// the OpenRouter slug — a Gemini slug for tier 2, a Claude slug for tier 3; both
+// share this exact request/response shape. Resolves to the raw model text (JSON
+// string), same contract as callGemini. The 'claude'/'openrouter' error label is
+// applied by httpsPostJson via the caller's withRetry label.
+function callOpenRouterModel(model, { system, parts, maxTokens }, label = 'openrouter') {
+  const url = `${OPENROUTER_BASE_URL}/chat/completions`;
+  const content = (parts || []).map((p) => {
+    if (p && typeof p.text === 'string') return { type: 'text', text: p.text };
+    if (p && p.inlineData) {
+      return { type: 'image_url', image_url: { url: `data:${p.inlineData.mimeType};base64,${p.inlineData.data}` } };
+    }
+    return null;
+  }).filter(Boolean);
+  const messages = [];
+  if (system) messages.push({ role: 'system', content: system });
+  messages.push({ role: 'user', content });
+  const body = {
+    model,
+    messages,
+    temperature: 0,
+    max_tokens: maxTokens,
+    response_format: { type: 'json_object' },
+  };
+  return httpsPostJson(
+    url,
+    {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
+      // Optional OpenRouter attribution headers (harmless if ignored).
+      'HTTP-Referer': 'https://github.com/fastlink',
+      'X-Title': 'FastLink scout',
+    },
+    body,
+    label,
+  ).then((data) => (data?.choices?.[0]?.message?.content) || '{}');
 }
 
 // Tier 3 — SCREENSHOT escalation. Multimodal locate: given an annotated

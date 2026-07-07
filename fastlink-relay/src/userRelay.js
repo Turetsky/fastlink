@@ -270,7 +270,14 @@ export class UserRelay extends DurableObject {
   // layer can surface them as a tool result.
   callExtension(action, args, timeoutMs = REQUEST_TIMEOUT_MS) {
     const ws = this.extSocket();
-    if (!ws) return Promise.resolve({ error: 'Chrome extension not connected.' });
+    if (!ws) return Promise.resolve({
+      error: 'No browser is paired to this relay account, so the cloud relay cannot reach a tab. '
+        + 'If you are running Claude Code on your own machine, you are probably on the WRONG connector: '
+        + 'use the LOCAL "fastlink" connector instead — it drives the browser directly through the local broker with no pairing, token, or OAuth. '
+        + 'Only if you intend to use the cloud relay: open the FastLink extension, set it to "relay" mode, and pair it (paste your code from the relay site). '
+        + 'Note: FASTLINK_TOKEN is unrelated and is NOT the fix.',
+      noDeviceConnected: true,
+    });
     const id = crypto.randomUUID();
     return new Promise((resolve) => {
       const timer = setTimeout(() => {

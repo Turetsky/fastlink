@@ -428,15 +428,30 @@
 
       <!-- 6. BROKER SLOT -->
       <div class="card" id="install-card">
-      <h2>Broker slot <span class="badge fine" style="font-weight:400;">2-profile setups</span></h2>
-      <p class="desc"><strong>Running FastLink in a second Chrome profile on this computer?</strong> Then this setting is for you — without it, the two profiles fight over the same local connection between FastLink and Claude. Each profile needs its own slot: keep this profile on <strong>Primary</strong>, and in the second profile's FastLink settings choose <strong>Secondary</strong> (the slots use ports 9876 and 9877). Using just one profile? Leave this alone.</p>
+      <h2>Broker slot <span class="badge fine" style="font-weight:400;">multi-profile setups</span></h2>
+      <p class="desc"><strong>Driving more than one Chrome profile with FastLink on this computer?</strong> Give <strong>each</strong> browser its own slot — a unique name so FastLink (and you, when you tell Claude which one to drive) can tell them apart. Two browsers on the same slot fight over the connection and knock each other offline. <strong>Using just one browser? Leave this on Primary and ignore the rest.</strong></p>
+      <p class="desc" style="margin-top:2px;">Number your browsers like this — set the slot <em>inside each browser's</em> FastLink settings:</p>
+      <ol class="desc" style="margin:6px 0 10px; padding-left:22px; line-height:1.6;">
+        <li><strong>1st browser</strong> → <strong>Primary</strong> (the default — nothing to change)</li>
+        <li><strong>2nd browser</strong> → <strong>Secondary</strong></li>
+        <li><strong>3rd, 4th, …</strong> → <strong>Custom label</strong>, one distinct name each (e.g. <code>work</code>, <code>test</code>, <code>client-a</code>)</li>
+      </ol>
+      <p class="desc" style="margin-top:2px;">The name you pick here is exactly what you hand Claude to drive this browser: <code>fast_profile install:"secondary"</code> (or your custom name).</p>
+      <div id="slot-busy-warn" role="alert" hidden style="margin:10px 0 4px; padding:10px 12px; border-radius:var(--fl-r-lg); background:var(--fl-warn-bg); color:var(--fl-warn-text); border:1px solid color-mix(in srgb, var(--fl-warn-text) 35%, transparent); font-size:13px; line-height:1.45;"></div>
       <label for="install-select">This browser's slot</label>
       <select id="install-select">
-        <option value="primary">Primary (default · port 9876)</option>
-        <option value="secondary">Secondary (2nd Chrome profile · port 9877)</option>
+        <option value="primary">Primary — 1st browser (default · port 9876)</option>
+        <option value="secondary">Secondary — 2nd browser (port 9877)</option>
+        <option value="__custom__">Custom label… — 3rd browser onward (shares port 9876)</option>
       </select>
+      <div class="row" id="install-custom-row" hidden style="margin-top:8px; gap:8px; align-items:center;">
+        <input type="text" id="install-custom" placeholder="a unique name, e.g. work" maxlength="32"
+               pattern="[a-z0-9][a-z0-9_-]*" autocomplete="off" spellcheck="false"
+               style="flex:1; min-width:0;" />
+        <button type="button" id="install-custom-apply">Apply</button>
+      </div>
       <div class="row">
-        <span class="fine" id="install-detail">Switching reloads FastLink so it reconnects on the new slot.</span>
+        <span class="fine" id="install-detail">Give each browser a <strong>different</strong> name. Saving reloads FastLink to reconnect on the new slot. (Custom names all share port 9876 — the broker keeps them apart by name.)</span>
       </div>
     </div>
 

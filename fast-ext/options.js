@@ -418,32 +418,89 @@ async function onToggleDebugger() {
   }
 }
 
-// Broker slot selector. Mirrors connection.js: the install slot is stored in
-// chrome.storage.local under 'fastlinkInstallId' (default 'primary'). A 2nd
-// Chrome profile sets this to 'secondary' so the two profiles use different
-// broker ports (9876 vs 9877) instead of colliding — no source edit needed.
+// Broker slot LABEL (chrome.storage.local 'fastlinkInstallId', default 'primary').
+// Mirrors connection.js. Presets have a dedicated <option>; any other stored
+// value is a custom label shown via the "Custom label…" option.
 const INSTALL_ID_KEY = 'fastlinkInstallId';
-const VALID_INSTALL_IDS = ['primary', 'secondary'];
+const PRESET_INSTALL_IDS = ['primary', 'secondary'];
+const CUSTOM_OPTION = '__custom__';
+
+// Slot key, mirrors broker/server/connection.js: lowercase [a-z0-9_-], alnum first, ≤32.
+function sanitizeInstallId(raw) {
+  if (typeof raw !== 'string') return '';
+  return raw.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '').replace(/^[-_]+/, '').slice(0, 32);
+}
 
 async function renderInstallSlot() {
   const sel = $('install-select');
   if (!sel) return;
   let id = 'primary';
-  try { const o = await chrome.storage.local.get(INSTALL_ID_KEY); if (VALID_INSTALL_IDS.includes(o[INSTALL_ID_KEY])) id = o[INSTALL_ID_KEY]; }
+  try { const o = await chrome.storage.local.get(INSTALL_ID_KEY); id = sanitizeInstallId(o[INSTALL_ID_KEY]) || 'primary'; }
   catch {}
-  sel.value = id;
+  const customRow = $('install-custom-row');
+  const customInput = $('install-custom');
+  if (PRESET_INSTALL_IDS.includes(id)) {
+    sel.value = id;
+    if (customRow) customRow.hidden = true;
+  } else {
+    // Stored custom label → Custom option + show it in the input.
+    sel.value = CUSTOM_OPTION;
+    if (customInput) customInput.value = id;
+    if (customRow) customRow.hidden = false;
+  }
+  renderSlotBusy();
 }
 
-async function onInstallSlotChange() {
-  const sel = $('install-select');
-  const id = VALID_INSTALL_IDS.includes(sel.value) ? sel.value : 'primary';
+// The broker rejects a profile whose slot is already held by another live
+// profile (connection.js writes `fastlinkSlotBusy` on that signal). Surface it
+// here, pointing at a free slot, so the user knows exactly which knob to turn.
+async function renderSlotBusy() {
+  const el = $('slot-busy-warn');
+  if (!el) return;
+  let info = null;
+  try { const o = await chrome.storage.local.get('fastlinkSlotBusy'); info = o?.fastlinkSlotBusy || null; }
+  catch {}
+  if (!info) { el.hidden = true; return; }
+  const busy = info.install || 'primary';
+  const free = (Array.isArray(info.knownInstalls) ? info.knownInstalls : PRESET_INSTALL_IDS).find((s) => s !== busy)
+    || (busy === 'primary' ? 'secondary' : 'primary');
+  el.innerHTML = `⚠️ <strong>This slot (“${busy}”) is already in use by another Chrome profile.</strong> `
+    + `FastLink can't connect here until you move this profile to a free slot — switch it to <strong>${free === 'secondary' ? 'Secondary' : 'Primary'}</strong> below.`;
+  el.hidden = false;
+}
+
+// Persist slot label + reload so background.js reconnects on it.
+async function commitInstallSlot(id, humanLabel) {
   try {
     await chrome.storage.local.set({ [INSTALL_ID_KEY]: id });
-    showMsg(`Broker slot set to ${id === 'secondary' ? 'Secondary (port 9877)' : 'Primary (port 9876)'}. Reloading FastLink to reconnect…`, 'ok');
+    showMsg(`Broker slot set to ${humanLabel}. Reloading FastLink to reconnect…`, 'ok');
     setTimeout(() => chrome.runtime.reload(), 600);
   } catch (e) {
     showMsg(e?.message || String(e), 'err');
   }
+}
+
+function onInstallSlotChange() {
+  const sel = $('install-select');
+  const customRow = $('install-custom-row');
+  if (sel.value === CUSTOM_OPTION) {
+    // Reveal input, wait for Apply — don't store/reload yet.
+    if (customRow) customRow.hidden = false;
+    const input = $('install-custom');
+    if (input) input.focus();
+    return;
+  }
+  if (customRow) customRow.hidden = true;
+  const id = PRESET_INSTALL_IDS.includes(sel.value) ? sel.value : 'primary';
+  commitInstallSlot(id, id === 'secondary' ? 'Secondary (port 9877)' : 'Primary (port 9876)');
+}
+
+function onApplyCustomInstall() {
+  const input = $('install-custom');
+  const id = sanitizeInstallId(input?.value);
+  if (!id) { showMsg('Enter a label using letters, digits, "-" or "_" (e.g. "work").', 'err'); return; }
+  if (PRESET_INSTALL_IDS.includes(id)) { showMsg(`"${id}" is a preset slot — pick it from the dropdown instead.`, 'err'); return; }
+  commitInstallSlot(id, `“${id}” (custom · shares port 9876)`);
 }
 
 // ---------------------------------------------------------------------------
@@ -657,6 +714,8 @@ $('pause-btn').addEventListener('click', onPauseToggle);
 $('disconnect-btn').addEventListener('click', onDisconnectToggle);
 $('dbg-btn').addEventListener('click', onToggleDebugger);
 $('install-select').addEventListener('change', onInstallSlotChange);
+$('install-custom-apply').addEventListener('click', onApplyCustomInstall);
+$('install-custom').addEventListener('keydown', (e) => { if (e.key === 'Enter') onApplyCustomInstall(); });
 $('code').addEventListener('keydown', (e) => { if (e.key === 'Enter') onPair(); });
 
 $('gemini-btn').addEventListener('click', onSaveGeminiKey);
@@ -696,6 +755,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
     if (changes[ADVANCED_CONTROL_KEY]) renderDebugger();
     if (changes.fastlinkNotify) renderNotifyToggle();
     if (changes[AUTO_UPDATE_KEY] || changes[HALTED_KEY]) renderAutoUpdateToggle();
+    if (changes.fastlinkSlotBusy) renderSlotBusy();
     if (changes[DECISIONS_KEY] || changes.deviceToken) renderPermissions();
   }
   if (area === 'session' && changes[PAUSE_KEY]) renderControls();

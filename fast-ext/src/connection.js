@@ -1,17 +1,20 @@
 // Reconnect via chrome.alarms — service workers get killed and revived,
 // alarms survive the death.
 
-// FastLink supports two install SLOTS so two Chrome profiles on the same
-// machine never collide on the broker — each slot connects to its own port:
-//   primary:   9876  (the default — a fresh install needs no configuration)
-//   secondary: 9877  (a 2nd Chrome profile; set via the options page, no source edit)
-// The slot id is resolved at connect time from chrome.storage.local
-// ('fastlinkInstallId'), DEFAULTING to 'primary' when unset — so a fresh
-// install is 'primary' automatically and a 2nd profile just flips a stored
-// flag instead of editing code.
+// Slot LABEL (chrome.storage.local 'fastlinkInstallId', default 'primary') sent
+// in `hello` → broker demuxes N profiles by label. Ports: primary/custom → 9876
+// (shared, demuxed by label), secondary → 9877 (legacy). Set via options page.
 const INSTALL_PORTS = { primary: 9876, secondary: 9877 };
+const SHARED_PORT = INSTALL_PORTS.primary; // primary + every custom label dial here
 const DEFAULT_INSTALL_ID = 'primary';
 const INSTALL_ID_KEY = 'fastlinkInstallId';
+
+// Slot key, mirrors broker/server: lowercase [a-z0-9_-], alnum first, ≤32. '' → default.
+function sanitizeInstallId(raw) {
+  if (typeof raw !== 'string') return '';
+  return raw.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '').replace(/^[-_]+/, '').slice(0, 32);
+}
+
 // Cached after the first storage read so the hot path (ping/event sends) stays
 // synchronous. connect() awaits resolveInstallId() before dialing.
 let installId = DEFAULT_INSTALL_ID;
@@ -21,15 +24,15 @@ async function resolveInstallId() {
   if (installResolved) return installId;
   try {
     const o = await chrome.storage.local.get(INSTALL_ID_KEY);
-    const stored = o?.[INSTALL_ID_KEY];
-    if (typeof stored === 'string' && Object.hasOwn(INSTALL_PORTS, stored)) installId = stored;
+    const stored = sanitizeInstallId(o?.[INSTALL_ID_KEY]);
+    if (stored) installId = stored;
   } catch {}
   installResolved = true;
   return installId;
 }
 
-// Current slot's broker port. Derived live so it tracks installId once resolved.
-function currentPort() { return INSTALL_PORTS[installId] || INSTALL_PORTS[DEFAULT_INSTALL_ID]; }
+// Broker port for this slot: 'secondary' → 9877, else shared 9876 (demuxed by label).
+function currentPort() { return INSTALL_PORTS[installId] || SHARED_PORT; }
 const RECONNECT_ALARM = 'fastlink-reconnect';
 // Application-level ping every 20s. Two effects:
 //   1. Keeps the broker from terminating us as "dead" if WS pong frames don't
@@ -43,6 +46,11 @@ const PING_MS = 20_000;
 // 30s for the next alarm tick. Reset to the floor on every healthy open.
 const BACKOFF_MIN_MS = 1_000;
 const BACKOFF_MAX_MS = 30_000;
+// When the broker reports this slot is already held by another live profile
+// ({type:'slotBusy'}), don't war over it — sit out this long before re-dialing,
+// re-checking each cycle whether the other profile has freed the slot. Without
+// this the rejected profile would reconnect-and-get-rejected ~once/second.
+const SLOT_BUSY_COOLDOWN_MS = 60_000;
 // A socket stuck in CONNECTING this long never resolved (e.g. broker gone, or a
 // half-open WSL path that never errors). Force-recycle it instead of letting the
 // connect()-guard treat the zombie as "already connecting" forever.
@@ -80,6 +88,7 @@ let backoffMs = BACKOFF_MIN_MS;
 let connectStartedAt = 0;     // when the current socket entered CONNECTING
 let lastRxTs = 0;             // last inbound frame (proof the path is alive)
 let pongCapable = false;      // broker has echoed at least one {pong:true}
+let slotBusyUntil = 0;        // sit out reconnects until this ts (slot held by another profile)
 let lastClientCount = 0;      // mirror for the popup so a state-only update keeps it
 let handler = null;           // dispatchAction, captured so checkHealth can reconnect
 // State reporter injected by background.js. When two transports run at once,
@@ -119,6 +128,13 @@ async function connect() {
   // has a window. Otherwise the SW (kept alive by alarms) would claim the
   // install slot while having zero tabs to serve.
   if (!await hasAnyWindow()) return;
+  // Slot-busy cooldown: another live profile holds our slot. Defer dialing until
+  // the cooldown elapses, then re-check (the other profile may have closed since).
+  const nowTs = Date.now();
+  if (nowTs < slotBusyUntil) {
+    if (!reconnectTimer) reconnectTimer = setTimeout(() => { reconnectTimer = null; connect(); }, slotBusyUntil - nowTs);
+    return;
+  }
   await resolveInstallId();   // resolve this profile's slot (cached) before dialing
   recycle();   // drop any stale/zombie socket before dialing a fresh one
 
@@ -216,11 +232,38 @@ async function onMessage(ws, e) {
   try { msg = JSON.parse(e.data); } catch { return; }
   if (msg.pong) { pongCapable = true; return; }        // broker echoes our keepalive — enables staleness detection
   if (msg.ping) return;
-  if (msg.type === 'mcpClients') return setBadgeForCount(msg.count);
+  if (msg.type === 'slotBusy') return onSlotBusy(msg);
+  // mcpClients is only sent when the broker ADOPTED us → proof this slot is ours;
+  // clear any stale slot-busy cooldown/flag from a prior collision.
+  if (msg.type === 'mcpClients') { clearSlotBusy(); return setBadgeForCount(msg.count); }
   let reply;
   try { reply = await handler(msg.action, msg.args || {}); }
   catch (err) { reply = { error: err?.message || String(err) }; }
   ws.send(JSON.stringify({ id: msg.id, ...reply }));
+}
+
+// The broker rejected us because another live profile already holds this slot.
+// Enter a cooldown (so we don't reconnect-war) and surface a clear hint to the
+// options page so the user can switch this profile to a free slot. The broker
+// closes the socket right after; connect() then defers re-dialing until the
+// cooldown elapses and re-checks whether the slot freed.
+function onSlotBusy(msg) {
+  slotBusyUntil = Date.now() + SLOT_BUSY_COOLDOWN_MS;
+  backoffMs = BACKOFF_MAX_MS;     // if we do redial later, do it slowly
+  setLocalState('connecting');    // not connected; no dedicated color (badge stays red/yellow)
+  try {
+    chrome.storage.local.set({ fastlinkSlotBusy: {
+      install: msg.install || installId,
+      knownInstalls: Array.isArray(msg.knownInstalls) ? msg.knownInstalls : [],
+      at: Date.now(),
+    } });
+  } catch {}
+}
+
+// Slot is (now) ours — drop the cooldown + the options-page hint.
+function clearSlotBusy() {
+  if (slotBusyUntil) slotBusyUntil = 0;
+  try { chrome.storage.local.remove('fastlinkSlotBusy'); } catch {}
 }
 
 function startPingLoop(ws) {

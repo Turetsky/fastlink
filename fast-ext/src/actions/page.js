@@ -138,6 +138,27 @@ const labelFor = (el) => {
   return resolveIdRefs(el, 'aria-labelledby');
 };
 
+// Resolve a field's human label when it is NOT wired via for=/aria-labelledby —
+// e.g. a react-select whose combobox input carries an INTERNAL id in aria-label
+// (question_6132162009, gender, veteran_status) while the readable label sits in a
+// SEPARATE sibling <label> inside the same field group (Greenhouse). Climb a few
+// ancestors; the first ancestor that contains exactly ONE <label> not wrapping the
+// control is the field group, so return that label's text. Stop at the first
+// ancestor holding multiple labels (ambiguous — that's a form section, not a field).
+const containerLabel = (el) => {
+  let p = el.parentElement;
+  for (let hops = 0; p && hops < 5; hops++, p = p.parentElement) {
+    let labels = [];
+    try { labels = Array.from(p.querySelectorAll('label')).filter((l) => !l.contains(el)); } catch {}
+    if (labels.length === 1) {
+      const t = cleanLabel(labels[0].textContent);
+      if (t) return t;
+    }
+    if (labels.length > 1) break; // ambiguous group — don't climb into a section
+  }
+  return '';
+};
+
 // Walks the composed tree (shadow roots + same-origin iframes). Generic
 // version used by diagnose / select_option. Indexing has its own walker.
 const walkDeep = (root, selector, visit) => {
@@ -1018,7 +1039,13 @@ async function runPageAction(action, args) {
   // an action already returns its own snapshot.
   const withSnap = async (result, preSnap) => {
     if (!result || typeof result !== 'object') return result;
-    if (result.error || result.snapshot || args.noSnapshot) return result;
+    // noSnapshot opt-out — coerce defensively: a param not declared in the tool's
+    // inputSchema can reach us STRINGIFIED (e.g. the string "false", which is
+    // truthy and would wrongly suppress the snapshot the caller asked for). Treat
+    // only a genuine true / "true" / 1 as opt-out; false / "false" / 0 / unset all
+    // mean "include the snapshot".
+    const noSnapOptOut = args.noSnapshot === true || args.noSnapshot === 'true' || args.noSnapshot === 1;
+    if (result.error || result.snapshot || noSnapOptOut) return result;
     // Yield ~one frame so click handlers / framework effects settle before we
     // serialize — but NEVER hang on it. requestAnimationFrame is FROZEN in a
     // backgrounded / occluded tab (the relay drives exactly such tabs: the
@@ -1037,62 +1064,74 @@ async function runPageAction(action, args) {
       // hidden tab whose rAF never fires falls through instead of hanging.
       new Promise(r => setTimeout(r, 250)),
     ]);
-    // Avoid the double-walk: most actions already serialized a FULL match
-    // snapshot (serializeSnapshot(false)) to FIND their target. Rather than walk
-    // the entire index a SECOND time here, REUSE that result — viewport-filtered
-    // (cheap array filter, no layout) to keep the payload small. One walk per
-    // action instead of two. The reused view reflects match-time DOM; callers
-    // needing post-action state (a dropdown the click opened) should fast_snapshot
-    // / fast_wait. Actions with no precomputed snapshot (fast_scroll, fast_wait,
-    // fast_select_option) fall through to a single fresh serialize below.
-    if (preSnap && typeof preSnap === 'object' && Array.isArray(preSnap.items)) {
+    // FRESH POST-ACTION SNAPSHOT (field-feedback #1): re-walk the DOM AFTER the
+    // action settles so the returned snapshot reflects what the action DID — a
+    // dropdown it opened, a framework re-render, a revealed panel — instead of the
+    // match-time (pre-action) DOM. This removes the recurring need to fire a second
+    // fast_snapshot right after every click/fill, which was the single biggest
+    // round-trip tax on form-heavy flows. The match-time snapshot (preSnap, the
+    // FULL serialize the action did to FIND its target) is kept only as a FALLBACK
+    // for when the fresh walk can't run: a navigating click that tore the frame
+    // down, or a heavy page whose serialize bailed empty. We accept the second
+    // (viewport-only, time-boxed) walk — fewer round-trips beats one cheaper call.
+    const hasPre = preSnap && typeof preSnap === 'object' && Array.isArray(preSnap.items) && preSnap.items.length > 0;
+    const attachStale = (res) => {
       try {
         const vh = window.innerHeight, vw = window.innerWidth;
         const inView = (it) => !!it.inOverlay || !(it.y + it.h < 0 || it.y > vh || it.x + it.w < 0 || it.x > vw);
         const items = preSnap.items.filter(inView);
         const content = Array.isArray(preSnap.content) ? preSnap.content.filter(inView) : [];
-        // Action-result snapshot is a compact convenience preview — cap it
-        // tighter than an explicit fast_snapshot (the caller can always issue a
-        // full fast_snapshot for the complete set).
-        result.snapshot = capSnapshot(
+        res.snapshot = capSnapshot(
           { ...preSnap, count: items.length, items, contentCount: content.length, content },
           AUTO_ITEM_CAP, AUTO_CONTENT_CAP,
         );
+        res.snapshotStale = true; // match-time DOM: the fresh post-action walk was unavailable
         if (preSnap.snapshotTimedOut || preSnap.partial || preSnap.capped) {
-          result.snapshotPartial = true;
-          if (preSnap.snapshotTimedOut) result.snapshotTimedOut = true;
-          if (preSnap.capped) result.snapshotNote = 'page too heavy — viewport-only / partial index returned';
+          res.snapshotPartial = true;
+          if (preSnap.snapshotTimedOut) res.snapshotTimedOut = true;
+          if (preSnap.capped) res.snapshotNote = 'page too heavy — viewport-only / partial index returned';
         }
-      } catch {
-        result.snapshot = preSnap;
-      }
-      return result;
-    }
+      } catch { res.snapshot = preSnap; res.snapshotStale = true; }
+      return res;
+    };
     // The auto-snapshot is a convenience, never the point of the call. Bound it
     // and swallow failures so a slow/huge serialize can NEVER turn a successful
-    // action into a broker timeout. On overrun the action result is returned
-    // with whatever partial snapshot was gathered + snapshotTimedOut:true, so
-    // the agent still has rich text to act on instead of reaching for a
-    // screenshot.
+    // action into a broker timeout. On overrun whatever partial was gathered is
+    // returned with snapshotTimedOut:true so the agent still has rich text.
     try {
-      // Time-boxed + abortable: serialize now yields the main thread every
-      // SLICE_MS and bails at budgetMs, so a heavy page can NEVER turn a
-      // successful click/fill into a 30s broker timeout or freeze the renderer.
-      // indexMs is bounded too so the auto-snapshot returns within a couple
-      // seconds (partial is fine — the action already succeeded).
+      // Time-boxed + abortable: serialize yields the main thread every SLICE_MS
+      // and bails at budgetMs, so a heavy page can't turn a click/fill into a 30s
+      // timeout or freeze the renderer. drainMs first flushes the mutations the
+      // action just produced so they appear in THIS fresh walk.
       const snap = await serializeSnapshot(true, { budgetMs: 2000, drainMs: 30, indexMs: 1500 });
-      // Compact preview cap (tighter than an explicit fast_snapshot).
-      capSnapshot(snap, AUTO_ITEM_CAP, AUTO_CONTENT_CAP);
-      result.snapshot = snap;
-      if (snap && (snap.snapshotTimedOut || snap.partial || snap.capped)) {
-        result.snapshotPartial = true;
-        if (snap.snapshotTimedOut) result.snapshotTimedOut = true;
-        if (snap.capped) result.snapshotNote = 'page too heavy — viewport-only / partial index returned';
+      // A navigating click can tear the page down so the fresh walk returns empty
+      // — fall back to the match-time snapshot rather than returning nothing.
+      if ((!snap || !Array.isArray(snap.items) || snap.items.length === 0) && hasPre) {
+        attachStale(result);
+      } else {
+        capSnapshot(snap, AUTO_ITEM_CAP, AUTO_CONTENT_CAP);
+        result.snapshot = snap;
+        result.snapshotFresh = true; // post-action capture: reflects what the action did
+        if (snap && (snap.snapshotTimedOut || snap.partial || snap.capped)) {
+          result.snapshotPartial = true;
+          if (snap.snapshotTimedOut) result.snapshotTimedOut = true;
+          if (snap.capped) result.snapshotNote = 'page too heavy — viewport-only / partial index returned';
+        }
       }
     } catch (e) {
-      result.snapshot = null;
-      result.snapshotPartial = true;
-      result.snapshotNote = 'snapshot skipped — page too heavy to serialize';
+      // Fresh serialize failed — fall back to the match-time snapshot if we have
+      // one, else no snapshot.
+      if (hasPre) attachStale(result);
+      else {
+        result.snapshot = null;
+        result.snapshotPartial = true;
+        result.snapshotNote = 'snapshot skipped — page too heavy to serialize';
+      }
+    }
+    // A navigating click returns the about-to-unload page (or its stale fallback);
+    // flag that the real destination needs a post-load read.
+    if (result.willNavigate) {
+      result.snapshotNote = 'navigation triggered — this snapshot may be the pre-navigation page; call fast_snapshot after the new page loads';
     }
     return result;
   };
@@ -1461,8 +1500,11 @@ async function runPageAction(action, args) {
       if (byId) return byId;
       const fieldish = 'input,select,textarea,[role="combobox"],[role="listbox"],[role="textbox"],[role="searchbox"],[contenteditable="true"],[contenteditable=""],[aria-labelledby],[aria-label],[placeholder]';
       const candidatesAll = queryAllDeep(document, fieldish);
+      // Wired label (for=/wrapping/aria-labelledby) OR a sibling <label> in the
+      // same field group — the latter rescues react-select inputs whose only
+      // aria-label is an opaque internal id (Greenhouse dropdowns).
       for (const el of candidatesAll) {
-        const lbl = labelFor(el);
+        const lbl = labelFor(el) || containerLabel(el);
         if (lbl && lbl.toLowerCase().includes(fieldLo)) return el;
       }
       for (const el of candidatesAll) {
@@ -1502,11 +1544,23 @@ async function runPageAction(action, args) {
         return { picked: target.text, kind: 'native-select' };
       }
 
-      const ctrl = field.closest('.react-select__control');
+      // react-select detection must be CLASS-PREFIX-AGNOSTIC. The classNamePrefix
+      // is configurable: the default build uses `react-select__control`, but many
+      // sites (Greenhouse) set prefix="select" → `select__control`. Matching only
+      // `.react-select__control` missed those, so the field fell through to the
+      // generic ARIA branch below, which opened the wrong widget and returned the
+      // FIRST react-select's options on the page (the intl phone-country dial-code
+      // list). `[class*="select__control"]` covers both prefixes; the
+      // react-select-<N>-input id (always present regardless of prefix) is a
+      // structural fallback for any other custom prefix.
+      const rsInput = (field.matches && field.matches('input[id^="react-select-"]')) ? field
+        : (field.querySelector && field.querySelector('input[id^="react-select-"]')) || null;
+      let ctrl = field.closest('[class*="select__control"]');
+      if (!ctrl && rsInput) ctrl = rsInput.closest('[class*="__control"]');
       if (ctrl) {
-        if (!ctrl.classList.contains('react-select__control--menu-is-open')) ctrl.click();
+        if (!/--menu-is-open/.test(ctrl.className)) ctrl.click();
         await wait(250);
-        const input = ctrl.querySelector('input[id^="react-select-"]') || (field.tagName === 'INPUT' ? field : null);
+        const input = rsInput || ctrl.querySelector('input[id^="react-select-"]') || (field.tagName === 'INPUT' ? field : null);
         if (input) {
           input.focus();
           const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
@@ -1514,12 +1568,24 @@ async function runPageAction(action, args) {
           input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
           await wait(400);
         }
-        const listboxId = input?.id ? input.id.replace('-input', '-listbox') : null;
-        const listbox = (listboxId && document.getElementById(listboxId)) || document.querySelector('[role="listbox"]');
-        const opts = listbox ? Array.from(listbox.querySelectorAll('[id*="-option-"], [role="option"]')) : [];
+        // SCOPE options to THIS react-select instance. Each instance's options are
+        // ids `react-select-<N>-option-<M>`, so an id-prefix query can only ever
+        // return THIS control's options — it can NOT fall back to another
+        // react-select (the phone-country widget) elsewhere on the page. Fall back
+        // to the id-derived listbox, then the control's own menu container, never a
+        // global first-match [role=listbox].
+        const instId = input?.id ? input.id.replace(/-input$/, '') : null; // react-select-<N>
+        let opts = [];
+        if (instId) opts = Array.from(document.querySelectorAll(`[id^="${instId}-option"]`));
+        if (!opts.length) {
+          const listbox = (instId && document.getElementById(`${instId}-listbox`))
+            || (ctrl.parentElement && ctrl.parentElement.querySelector('[class*="select__menu"]'))
+            || null;
+          opts = listbox ? Array.from(listbox.querySelectorAll('[id*="-option-"], [role="option"]')) : [];
+        }
         const target = pickByText(opts, optText, optionText);
         if (!target) {
-          return { error: 'no matching option in react-select', tried: optionText, available: opts.slice(0, 10).map(o => (o.textContent || '').trim()) };
+          return { error: 'no matching option in react-select', tried: optionText, kind: 'react-select', instance: instId || undefined, available: opts.slice(0, 10).map(o => (o.textContent || '').trim()) };
         }
         target.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, composed: true }));
         target.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, composed: true }));

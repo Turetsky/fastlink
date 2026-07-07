@@ -24,6 +24,8 @@ import {
 // the FAST tools instead of its default "screenshot + read it myself" instinct.
 // Keep in sync with fast-dxt/server/transports.js INSTRUCTIONS.
 const INSTRUCTIONS = [
+  'THIS IS THE CLOUD relay connector (server "fastlink-relay", shown as "claude.ai Fastlink") — it drives the browser over the multi-tenant relay and needs the user\'s extension PAIRED to their relay account. If a separate LOCAL connector is ALSO listed (server "fastlink") — i.e. this is a Claude Code session on the user\'s own machine — PREFER THAT LOCAL ONE; it drives the browser directly with no pairing/token/OAuth. FASTLINK_TOKEN is NOT used by this connector either; never treat a missing FASTLINK_TOKEN as the cause of a problem here — this path authenticates with OAuth.',
+  '',
   'FastLink drives the user\'s real Chrome tab. Use it efficiently:',
   '- READ a page with fast_snapshot — a fast, structured index of the DOM (readable text + clickable elements with coords). Do NOT take a screenshot to read content. (fast_scout can pre-read a page so you plan in one pass.)',
   '- LOCATE/click something NOT in the DOM (canvas, opaque/cross-origin iframe, image, custom-rendered UI) with fast_point or fast_locate (fast_fill_vision to fill a visual form). Gemini reads the screenshot and returns the pixel coordinates FOR you — never screenshot-and-read-it-yourself; that is slow and token-heavy. fast_screenshot is for VISUAL CONFIRMATION only, never to read/parse page content.',
@@ -130,7 +132,7 @@ const MUTATING_TOOLS = new Set([
   'fast_key', 'fast_key_press', 'fast_nav', 'fast_evaluate', 'fast_drag', 'fast_drag_xy',
   'fast_select_option', 'fast_wheel', 'fast_scroll', 'fast_tab', 'fast_close', 'fast_reload',
   'fast_hover', 'fast_macro_run', 'fast_macro_save', 'fast_macro_delete', 'fast_network_replay',
-  'fast_fill_vision', 'fast_do',
+  'fast_fill_vision', 'fast_do', 'fast_upload',
 ]);
 
 // Diagnostic/orchestration tools that may NOT appear as a batch/macro step.
@@ -330,7 +332,7 @@ async function relayStatus(relay) {
       ? 'Driving is PAUSED by the user (FastLink extension popup → Resume to continue). All browser tools are refused until then.'
       : connected
       ? 'Your browser extension is paired and connected. fast_snapshot / fast_click / fast_fill etc. should work on your active tab.'
-      : 'No extension is connected to your relay. Open the FastLink extension, make sure it is in "relay" mode and paired (paste your pairing code from the relay site), then retry.',
+      : 'No extension is connected to your relay. If you are running Claude Code on your own machine you are likely on the WRONG connector — prefer the LOCAL "fastlink" connector (local broker, no pairing/token/OAuth). To actually use the relay: open the FastLink extension, set it to "relay" mode and pair it (paste your code from the relay site), then retry. (FASTLINK_TOKEN is unrelated and not the fix.)',
     scoutNote: scoutEnabled
       ? 'Scout/vision tier (fast_scout, fast_point, fast_fill_vision, fast_do, fast_locate) is enabled.'
       : 'Scout/vision tier is disabled — add your own Gemini API key in relay settings, or set the operator GEMINI_API_KEY secret.',

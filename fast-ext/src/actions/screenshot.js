@@ -49,12 +49,31 @@ async function captureForeground(args = {}) {
   const format = (args.format || 'png').toLowerCase();
   const capOpts = { format };
   if (format === 'jpeg' && typeof args.quality === 'number') capOpts.quality = args.quality;
+  const fresh = args.fresh === true || args.freshCapture === true;
 
   const tab = await resolveForegroundTab(args);
   if (!tab || typeof tab.windowId !== 'number') {
     const err = new Error('no foreground tab to screenshot');
     err.hint = 'no active/last-focused window resolved; focus a Chrome window and retry.';
     throw err;
+  }
+
+  // FRESH capture: chrome.tabs.captureVisibleTab can hand back a STALE composited
+  // frame (live bug: 3 byte-identical captures across focus changes), because it
+  // reads the GPU compositor's last frame, not necessarily a new paint. CDP
+  // Page.captureScreenshot reads the live window surface, so it returns a current
+  // frame. Use it FIRST when fresh is requested AND the foreground tab is the one
+  // CDP would target (getActiveTab honors the pin — don't let a backgrounded pin
+  // divert the capture to the wrong tab). Fall through to the normal path on any
+  // failure (e.g. advanced control off).
+  if (fresh) {
+    try {
+      const active = await getActiveTab();
+      if (active?.id === tab.id) {
+        const dataUrl = await captureViaDebugger(capOpts);
+        if (dataUrl) return { dataUrl, format, fresh: true };
+      }
+    } catch (_) { /* fall through to captureVisibleTab */ }
   }
 
   // captureVisibleTab is PIXEL-based, so it captures restricted pages too — the

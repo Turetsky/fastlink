@@ -180,28 +180,46 @@ async function selectAllAndDelete(tabId) {
 //   args.text   : string to insert (required)
 //   args.clear  : when true, select-all + Delete first so the value is REPLACED,
 //                 not appended (default false → legacy append-to-focused).
+//   args.force  : (alias allowIframe) SKIP the editable-focus guard. The guard's
+//                 probe runs only in the TOP frame, so when focus is inside a
+//                 CROSS-ORIGIN iframe (e.g. appleid.apple.com embedded in
+//                 account.apple.com) the top doc's activeElement is the <iframe>
+//                 element — not editable — and the guard refuses, even though a
+//                 prior fast_click_xy DID focus the inner input. CDP
+//                 Input.insertText is browser-level and DOES reach that focused
+//                 cross-origin input, so force:true lets the read-coords →
+//                 fast_click_xy → fast_type playbook fill cross-origin forms with
+//                 NO vision/Gemini. Only use after a click that focused the field.
 // Before inserting we verify an EDITABLE element is actually focused — a bare
 // insertText goes to document.activeElement, so with nothing useful focused the
 // text vanishes or lands in the wrong field (live: a URL appended into a Name
 // field, "FastLink relayhttps://…"). Returns which element received the text.
-export async function typeText({ text, clear } = {}) {
+export async function typeText({ text, clear, force, allowIframe } = {}) {
   if (typeof text !== 'string') return { error: 'fast_type: text is required (string)' };
   const got = await getInjectableTab();
   if (got.error) return got;
   const tabId = got.tab.id;
+  const forced = force === true || allowIframe === true;
 
   const probe = await injectInTab({ world: 'MAIN', func: inspectActiveElement });
   if (probe.error) return probe;
   const el = probe.result;
-  if (!el || !el.editable) {
-    return { error: 'fast_type: no editable element focused — click/focus the field first', focused: el?.tag || null };
+  // Normal mode: refuse when nothing editable is focused (catches the "typed into
+  // the wrong field" class of bug). Force mode: trust the caller's prior focusing
+  // click — the editable element may be inside a cross-origin iframe the top-frame
+  // probe can't see, so don't refuse on a non-editable/<iframe> activeElement.
+  if (!forced && (!el || !el.editable)) {
+    return { error: 'fast_type: no editable element focused — click/focus the field first (or pass force:true for a cross-origin iframe input you already clicked)', focused: el?.tag || null };
   }
 
   if (clear) await selectAllAndDelete(tabId);
   await cdp(tabId, 'Input.insertText', { text });
 
   // Echo the (post-insert) focused element so the caller can confirm the text
-  // landed where intended. Best-effort — fall back to the pre-insert probe.
+  // landed where intended. Best-effort — fall back to the pre-insert probe. In
+  // force mode across a cross-origin iframe boundary this echoes the <iframe>
+  // element (the inner input is unreadable from the top frame) — expected, not a
+  // failure; flag forced so the caller knows the guard was bypassed intentionally.
   let into = el;
   try {
     const after = await injectInTab({ world: 'MAIN', func: inspectActiveElement });
@@ -210,7 +228,8 @@ export async function typeText({ text, clear } = {}) {
   return {
     typed: text.length,
     cleared: !!clear,
-    into: { tag: into.tag, type: into.type, label: into.label, value: into.value },
+    forced: forced || undefined,
+    into: into ? { tag: into.tag, type: into.type, label: into.label, value: into.value } : null,
   };
 }
 

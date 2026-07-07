@@ -5,15 +5,18 @@ import { onExtensionResponse, failPendingForSocket } from './router.js';
 import { mcpClientCount, broadcastToMcp } from './mcpBridge.js';
 import { attachHeartbeat, startHeartbeatLoop } from './heartbeat.js';
 
-// One port per install (EXT_PORTS, imported from state.js as the single source
-// of truth: { primary: 9876, secondary: 9877 }). Two extensions running side-by-
-// side never collide because they target different sockets — no race-reconnect.
-// The port's own EXT_PORTS key IS that port's DEFAULT install id.
+// Binds EXT_PORTS. 'primary' 9876 = shared port for custom labels (demuxed by
+// `hello` label → N profiles/port); 'secondary' 9877 + no-hello → port default.
 
-// 2-second grace for the extension to send {type:'hello', installId} after
-// connect. If it doesn't, we fall back to the install mapped to the port —
-// covers older extension builds that don't speak hello yet.
+// 2s grace for {type:'hello', installId}; absent → port default.
 const HELLO_TIMEOUT_MS = 2_000;
+
+// Slot key: lowercase [a-z0-9_-], alnum first, ≤32. null → port default.
+function sanitizeInstallId(raw) {
+  if (typeof raw !== 'string') return null;
+  const id = raw.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '').replace(/^[-_]+/, '').slice(0, 32);
+  return id || null;
+}
 
 const extSockets = {
   *[Symbol.iterator]() { yield* state.allConnectedSockets(); },
@@ -46,10 +49,24 @@ function startOne(defaultId, port) {
 
     function assign(id, socket) {
       if (installId) return;
-      installId = id;
-      // Replace prior socket for the same install (SW respawn = stale prev).
-      // Cross-install never collides because they're on different ports.
+      // Same-slot arbitration. A prior socket on this install is EITHER a stale
+      // socket from a service-worker respawn (adopt the newcomer, replace it) OR
+      // a second live Chrome profile that defaulted to the same slot (a real
+      // COLLISION — must NOT evict the incumbent, or both profiles ping-pong the
+      // slot in an endless reconnect war). isInstallLive() distinguishes them.
       const prevForId = state.getSocketForInstall(id);
+      if (prevForId && prevForId !== socket && state.isInstallLive(id)) {
+        // Live incumbent owns the slot → tell the newcomer to switch slots and
+        // close it, leaving the working profile untouched.
+        log(`slot "${id}" busy (live incumbent) — rejecting newcomer on :${port}`);
+        try { socket.send(JSON.stringify({ type: 'slotBusy', install: id, knownInstalls: state.knownInstalls() })); } catch {}
+        // Give the frame a tick to flush before closing.
+        setTimeout(() => { try { socket.close(); } catch {} }, 50);
+        return; // do NOT adopt — installId stays null so this socket owns no slot
+      }
+      installId = id;
+      // Stale prev (respawn) → replace. Distinct labels = distinct slots even on
+      // shared port 9876, so cross-install never collides.
       if (prevForId && prevForId !== socket) try { prevForId.close(); } catch {}
       state.setExtensionSocket(id, socket);
       attachHeartbeat(socket);
@@ -61,9 +78,10 @@ function startOne(defaultId, port) {
       try { msg = JSON.parse(data.toString()); } catch { return; }
       if (msg.type === 'hello' && typeof msg.installId === 'string') {
         clearTimeout(helloTimer);
-        const id = msg.installId.toLowerCase();
-        if (!Object.hasOwn(EXT_PORTS, id)) {
-          log(`unknown installId "${id}" on :${port}, falling back to "${defaultId}"`);
+        // Sanitizable label → dynamic slot; empty/garbage → port default.
+        const id = sanitizeInstallId(msg.installId);
+        if (!id) {
+          log(`unusable installId "${msg.installId}" on :${port}, falling back to "${defaultId}"`);
           assign(defaultId, ws);
         } else {
           assign(id, ws);

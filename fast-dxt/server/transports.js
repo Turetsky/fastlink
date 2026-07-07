@@ -11,6 +11,8 @@ import { log } from './log.js';
 // Guidance the client (Claude) sees in the initialize result — steers it toward
 // the FAST tools instead of its default "screenshot + read it myself" instinct.
 const INSTRUCTIONS = [
+  'THIS IS THE LOCAL FastLink connector (named "fastlink") — Claude Code on the user\'s own machine drives the browser through the local broker. No pairing, no token, no OAuth. If a separate CLOUD connector is ALSO listed (server "fastlink-relay" / shown as "claude.ai Fastlink"), PREFER THIS LOCAL ONE for CLI sessions; that cloud connector is for claude.ai web and needs the browser paired to a relay account. FASTLINK_TOKEN is NOT used here — it is an unrelated, optional local-HTTP secret; never treat a missing FASTLINK_TOKEN as the cause of a connection problem.',
+  '',
   'FastLink drives the user\'s real Chrome tab. Use it efficiently:',
   '- READ a page with fast_snapshot — a fast, structured index of the DOM (readable text + clickable elements with coords). Do NOT take a screenshot to read content. (fast_scout can pre-read a page so you plan in one pass.)',
   '- LOCATE/click something NOT in the DOM (canvas, opaque/cross-origin iframe, image, custom-rendered UI) with fast_point or fast_locate (fast_fill_vision to fill a visual form). Gemini reads the screenshot and returns the pixel coordinates FOR you — never screenshot-and-read-it-yourself; that is slow and token-heavy. fast_screenshot is for VISUAL CONFIRMATION only, never to read/parse page content.',
