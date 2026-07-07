@@ -46,8 +46,8 @@ Extension changes only take effect after **syncing `fast-ext/` → `C:\Users\yjt
   default react-select option-id scheme; the id-derived `-listbox` and
   `[class*="select__menu"]` fallbacks cover non-standard builds. Native `<select>`
   and generic-ARIA-listbox branches are untouched.
-- **Status:** in code + synced to Windows copy. Needs extension reload + live retest
-  on the Greenhouse form.
+- **Status:** committed + pushed (`0aa05f0`), synced to Windows copy. Needs extension
+  reload + live retest on the Greenhouse form.
 
 ## 2026-07-07 — `fast_upload` (file upload without the OS picker)
 - **What:** New tool `fast_upload` that sets file(s) on a `<input type=file>` via the
@@ -70,16 +70,18 @@ Extension changes only take effect after **syncing `fast-ext/` → `C:\Users\yjt
   extension-side `winifyPath` is idempotent (safe on already-Windows paths) so the
   relay passthrough handles `/mnt/c` and `C:/` too; native-WSL translation only
   happens server-side (WSL MCP), not on the relay.
-- **Status:** in code + synced to Windows copy. Needs extension reload + Claude Code
-  restart (to expose the new tool) before it's callable.
+- **Status:** committed + pushed (`0aa05f0`), synced to Windows copy. Needs extension
+  reload + Claude Code restart (to expose the new tool) before it's callable.
 
 ---
 
-## Pre-existing uncommitted work (as of 2026-07-07, before the above)
+## Pre-existing in-flight work (bundled into commit `0aa05f0`, 2026-07-07)
 
 The tree already carried a large body of **uncommitted** changes when this log
-started (~997 insertions across 24 files) — not written here entry-by-entry because
-they predate the log. High level, so we don't accidentally revert them:
+started (~997 insertions across 24 files) — now committed together with the above in
+`0aa05f0` (they were entangled in the same files, so couldn't be split cleanly). Not
+written entry-by-entry because they predate the log. High level, so we don't
+accidentally revert them:
 
 - **BUG-5 multi-install routing** — arbitrary N Chrome profiles via slot labels
   (`fast_profile`, `fast_status` selectedInstall); broker demux by label.
