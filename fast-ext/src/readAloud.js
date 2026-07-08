@@ -15,6 +15,9 @@
 // while the current one plays, so playback is gapless.
 //
 // ISOLATED-world content script on <all_urls>, all in a closed shadow root.
+// The widget is HIDDEN by default — it mounts only when toggled on from the
+// toolbar popup ('fastlink:read-aloud-toggle'), so it never covers page UI
+// uninvited. The ✕ button and the popup both hide it again.
 
 (() => {
   if (window.top !== window) return;            // top frame only
@@ -27,7 +30,6 @@
   const HOST_ID = '__fastlink_read_host__';
   const RATE_KEY = 'readAloudRate';
   const VOICE_KEY = 'readAloudVoice';           // 'n:<edgeId>' | 's:<sysURI>' | 's'
-  const ENABLED_KEY = 'readAloudEnabled';
   const MIN_RATE = 0.5, MAX_RATE = 3.0;
 
   // Edge neural TTS endpoint constants. The WebSocket is opened HERE in the
@@ -364,7 +366,11 @@
     root.className = 'wrap';
     shadow.appendChild(style);
     shadow.appendChild(root);
+    shadow.addEventListener('click', onClick);
+    shadow.addEventListener('input', onInput);
+    shadow.addEventListener('change', onChange);
     document.documentElement.appendChild(host);
+    _sig = null;                                 // fresh root → force a full paint
     render();
   };
 
@@ -503,7 +509,7 @@
     else if (act === 'toggle') togglePause();
     else if (act === 'stop') stop();
     else if (act === 'drawer') { drawerOpen = !drawerOpen; render(); }
-    else if (act === 'hide') { stop(); try { host.remove(); } catch {} }
+    else if (act === 'hide') hide();
   };
   const onInput = (e) => {
     const r = e.target.closest('[data-act="rate"]');
@@ -522,20 +528,45 @@
   };
 
   // ---- lifecycle ------------------------------------------------------------
+  // Hidden until toggled on from the toolbar popup. show() mounts the widget
+  // (idle "Read aloud" pill); hide() stops playback and removes it entirely.
   const onPageHide = () => { cancelAll(); };
 
-  const init = async () => {
+  let shown = false;
+  let voicesRequested = false;
+
+  const show = () => {
+    if (shown && host && document.documentElement.contains(host)) return;
+    shown = true;
     mount();
-    shadow.addEventListener('click', onClick);
-    shadow.addEventListener('input', onInput);
-    shadow.addEventListener('change', onChange);
-    window.addEventListener('pagehide', onPageHide);
-    try { synth?.addEventListener?.('voiceschanged', () => { if (drawerOpen) { const sel = root?.querySelector('[data-act="voice"]'); if (sel) sel.innerHTML = voiceOptionsHtml(); } }); } catch {}
-    await loadNeuralVoices();
-    // If neural is available and the user hasn't chosen otherwise, default to it.
-    if (engine === 'n' && !neuralVoices) { engine = 's'; }   // chose neural before but endpoint down now
-    render();
+    if (!voicesRequested) {
+      voicesRequested = true;
+      loadNeuralVoices().then(() => {
+        // Wanted neural but the endpoint is down → fall back to system.
+        if (engine === 'n' && !neuralVoices) engine = 's';
+        render();
+      });
+    }
   };
+
+  const hide = () => {
+    shown = false;
+    stop();
+    try { host?.remove(); } catch {}
+    host = shadow = root = null;
+  };
+
+  chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+    if (msg?.type === 'fastlink:read-aloud-toggle') {
+      shown ? hide() : show();
+      sendResponse({ ok: true, shown });
+    } else if (msg?.type === 'fastlink:read-aloud-state') {
+      sendResponse({ ok: true, shown });
+    }
+  });
+
+  window.addEventListener('pagehide', onPageHide);
+  try { synth?.addEventListener?.('voiceschanged', () => { if (drawerOpen) { const sel = root?.querySelector('[data-act="voice"]'); if (sel) sel.innerHTML = voiceOptionsHtml(); } }); } catch {}
 
   window.__fastlinkReadTeardown = () => {
     try { cancelAll(); } catch {}
@@ -544,10 +575,10 @@
     host = shadow = root = null;
   };
 
-  // Load saved prefs (rate, voice, enabled) then start.
+  // Load saved prefs (rate, voice) up front so the first show() renders them.
   try {
-    chrome.storage?.local?.get([RATE_KEY, VOICE_KEY, ENABLED_KEY], (o) => {
-      if (chrome.runtime?.lastError) { engine = 'n'; init(); return; }
+    chrome.storage?.local?.get([RATE_KEY, VOICE_KEY], (o) => {
+      if (chrome.runtime?.lastError) { engine = 'n'; return; }
       const r = parseFloat(o?.[RATE_KEY]);
       if (!Number.isNaN(r)) rate = Math.min(MAX_RATE, Math.max(MIN_RATE, r));
       const v = o?.[VOICE_KEY];
@@ -557,10 +588,8 @@
       } else {
         engine = 'n';                            // first run: prefer neural (loadNeuralVoices confirms)
       }
-      if (o?.[ENABLED_KEY] === false) return;    // disabled in options
-      init();
     });
   } catch {
-    engine = 'n'; init();
+    engine = 'n';
   }
 })();

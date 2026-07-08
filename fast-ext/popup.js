@@ -525,6 +525,40 @@ async function renderUpdate() {
   el.append(head, how, link);
 }
 
+// ---------------------------------------------------------------------------
+// Read-aloud toggle. The widget (src/readAloud.js) is hidden by default; this
+// button shows/hides it on the active tab via a content-script message. Hidden
+// when the tab has no content script (chrome:// pages, tabs opened before the
+// extension loaded).
+// ---------------------------------------------------------------------------
+async function readAloudTab() {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    if (tab?.id != null && /^https?:/.test(tab.url || '')) return tab;
+  } catch {}
+  return null;
+}
+
+async function renderReadAloud() {
+  const btn = $('read-aloud');
+  const tab = await readAloudTab();
+  if (!tab) { btn.style.display = 'none'; return; }
+  try {
+    const r = await chrome.tabs.sendMessage(tab.id, { type: 'fastlink:read-aloud-state' });
+    btn.textContent = r?.shown ? '🔊 Hide read-aloud player' : '🔊 Read aloud on this page';
+    btn.style.display = '';
+  } catch {
+    btn.style.display = 'none';                  // no content script on this tab
+  }
+}
+
+$('read-aloud').addEventListener('click', async () => {
+  const tab = await readAloudTab();
+  if (!tab) return;
+  try { await chrome.tabs.sendMessage(tab.id, { type: 'fastlink:read-aloud-toggle' }); } catch {}
+  window.close();
+});
+
 $('open').addEventListener('click', () => { chrome.runtime.openOptionsPage(); window.close(); });
 $('reload').addEventListener('click', () => chrome.runtime.reload());
 $('pause-btn').addEventListener('click', onPauseToggle);
@@ -568,6 +602,7 @@ try {
 } catch {}
 
 render();
+renderReadAloud();
 renderConsent();
 renderDriving();
 renderControls();

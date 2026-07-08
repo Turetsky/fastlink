@@ -19,6 +19,21 @@ Extension changes only take effect after **syncing `fast-ext/` → `C:\Users\yjt
 
 ---
 
+## 2026-07-08 — Read-aloud widget: hidden by default, toggled from the popup
+- **What:** The read-aloud pill no longer auto-mounts on every page. It now mounts
+  only when toggled on via a new "🔊 Read aloud on this page" button in the toolbar
+  popup (messages `fastlink:read-aloud-toggle` / `fastlink:read-aloud-state` to the
+  content script). The ✕ button hides it fully again; removed the dead
+  `readAloudEnabled` options flag; neural voices load lazily on first show.
+- **Why:** The always-on bottom-right overlay was covering page buttons.
+- **Files:** `fast-ext/src/readAloud.js`, `fast-ext/popup.html`, `fast-ext/popup.js`.
+- **Watch out:** the popup button hides itself on tabs without a content script
+  (chrome:// pages, tabs opened before the extension loaded — reload the tab).
+  Shadow-DOM listeners now attach inside `mount()` (recreated per show), and
+  `mount()` resets the paint signature so a re-show repaints fully.
+- **Status:** in code / synced to Windows copy — needs extension reload at
+  `chrome://extensions` to take effect.
+
 ## 2026-07-07 — `fast_select_option` react-select targeting fix
 - **What:** Made react-select detection class-prefix-agnostic and scoped option
   matching to the specific react-select instance.
