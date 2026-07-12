@@ -19,6 +19,30 @@ Extension changes only take effect after **syncing `fast-ext/` → `C:\Users\yjt
 
 ---
 
+## 2026-07-12 — Alex's laptop moved to the official release channel (fplhij → ockcja)
+- **What:** Repointed the HKLM `ExtensionInstallForcelist` entry on Alex's laptop
+  from the legacy local-file channel (ID `fplhijboglabfjbeafipmhndcefpgnjf`,
+  `update-fplhij.xml` + locally packed crx) to the official GitHub channel
+  (`ockcjadbkdfgfllidpcoamcepahfmlpf;https://raw.githubusercontent.com/Turetsky/fastlink/main/release/updates.xml`).
+  Chrome installed the signed `ext-v0.4.3` release and now auto-updates. Deleted
+  the dead local-channel artifacts (`update-fplhij.xml`, `update.xml`, local crx
+  packs, old `fastlink-policy*.reg`); kept `fast-ext-pack.pem` (old fplhij key,
+  unused, but key deletion is irreversible).
+- **Why:** The laptop stayed stuck on 0.4.2 — `git pull` updated source only, and
+  local repacking hit the manifest-`"key"` gotcha (packing with the `key` field
+  present pins the ockcja ID, mismatching the fplhij signature, so Chrome
+  silently refuses the crx). One machine on a hand-rolled channel meant every
+  release needed manual repacking there.
+- **Files:** none in-repo (registry + local artifact cleanup); see
+  `release/README.md` for the channel this now uses.
+- **Watch out:** all self-hosted installs are now on the ockcja channel — cutting
+  a release per `release/README.md` (on the machine holding
+  `fastlink-extension-signing-key.pem`) is the ONLY way to ship extension changes
+  to them. Never resurrect a local-file channel; if an install ever shows the
+  fplhij ID again, it's stale.
+- **Status:** done; verified live (0.4.3 installed and connected on Alex's laptop
+  2026-07-12).
+
 ## 2026-07-12 — Launch-time fast-retry burst for broker connect (+ connect-path logging)
 - **What:** For 8s after a browser window opens or the service worker wakes
   (`onWindowCreated` / `wake`), a failed broker dial retries every 250ms instead
