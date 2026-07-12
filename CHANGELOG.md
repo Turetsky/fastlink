@@ -20,47 +20,25 @@ Extension changes only take effect after **syncing `fast-ext/` → `C:\Users\yjt
 ---
 
 ## 2026-07-12 — Alex's laptop moved to the official release channel (fplhij → ockcja)
-- **What:** Repointed the HKLM `ExtensionInstallForcelist` entry on Alex's laptop
-  from the legacy local-file channel (ID `fplhijboglabfjbeafipmhndcefpgnjf`,
-  `update-fplhij.xml` + locally packed crx) to the official GitHub channel
-  (`ockcjadbkdfgfllidpcoamcepahfmlpf;https://raw.githubusercontent.com/Turetsky/fastlink/main/release/updates.xml`).
-  Chrome installed the signed `ext-v0.4.3` release and now auto-updates. Deleted
-  the dead local-channel artifacts (`update-fplhij.xml`, `update.xml`, local crx
-  packs, old `fastlink-policy*.reg`); kept `fast-ext-pack.pem` (old fplhij key,
-  unused, but key deletion is irreversible).
-- **Why:** The laptop stayed stuck on 0.4.2 — `git pull` updated source only, and
-  local repacking hit the manifest-`"key"` gotcha (packing with the `key` field
-  present pins the ockcja ID, mismatching the fplhij signature, so Chrome
-  silently refuses the crx). One machine on a hand-rolled channel meant every
-  release needed manual repacking there.
-- **Files:** none in-repo (registry + local artifact cleanup); see
-  `release/README.md` for the channel this now uses.
-- **Watch out:** all self-hosted installs are now on the ockcja channel — cutting
-  a release per `release/README.md` (on the machine holding
-  `fastlink-extension-signing-key.pem`) is the ONLY way to ship extension changes
-  to them. Never resurrect a local-file channel; if an install ever shows the
-  fplhij ID again, it's stale.
-- **Status:** done; verified live (0.4.3 installed and connected on Alex's laptop
-  2026-07-12).
+- **What:** HKLM forcelist entry repointed to the official channel
+  (`ockcja…;raw.githubusercontent…/release/updates.xml`); signed 0.4.3 installed,
+  auto-updates from now on. Dead local-channel artifacts deleted (kept `fast-ext-pack.pem`).
+- **Why:** Laptop stuck on 0.4.2 — local repacking hit the manifest-`"key"` gotcha
+  (crx signed as fplhij but manifest pins ockcja → Chrome silently refuses).
+- **Files:** none in-repo (registry + local cleanup); channel per `release/README.md`.
+- **Watch out:** releases per `release/README.md` are now the ONLY way to ship
+  extension changes to self-hosted installs; never resurrect a local-file channel.
+- **Status:** done; verified live 2026-07-12.
 
 ## 2026-07-12 — Launch-time fast-retry burst for broker connect (+ connect-path logging)
-- **What:** For 8s after a browser window opens or the service worker wakes
-  (`onWindowCreated` / `wake`), a failed broker dial retries every 250ms instead
-  of climbing the 1s→2s→4s→…30s backoff ladder; backoff doesn't grow during the
-  burst and any pending slow reconnect timer is cancelled so the dial happens
-  immediately. Also added sparse timestamped `[conn …]` logs (dial, open with
-  time-to-open, close, scheduled reconnect) to the SW console.
-- **Why:** Cold Chrome launch felt like "FastLink doesn't realize Chrome is up
-  until ~5s later" — the first dial races the broker warm-up, fails, and then
-  eats 1s+2s+4s of backoff before reconnecting.
+- **What:** For 8s after a window opens / SW wakes, failed broker dials retry every
+  250ms instead of climbing the 1s→30s backoff ladder; pending slow reconnects are
+  cancelled. Sparse timestamped `[conn …]` SW-console logs added (dial/open/close/retry).
+- **Why:** Cold Chrome launch ate 1s+2s+4s of backoff — "extension connects ~5s late".
 - **Files:** `fast-ext/src/connection.js`.
-- **Watch out:** the burst must NOT override the slot-busy cooldown (it doesn't —
-  `connect()` checks `slotBusyUntil` before dialing, and `onSlotBusy` pins
-  `backoffMs` to max, which only matters after the 8s window anyway). Steady-state
-  failure pacing (broker truly down) is unchanged outside the burst window.
-- **Status:** committed; verified live 2026-07-12 — after extension reload and a
-  full Chrome quit/relaunch, the extension attached immediately on launch
-  (single clean connection, no backoff churn in totalConnections).
+- **Watch out:** burst must not override the slot-busy cooldown (`connect()` checks
+  `slotBusyUntil` first); steady-state failure pacing unchanged outside the burst.
+- **Status:** committed; verified live 2026-07-12 (instant attach on quit/relaunch).
 
 ## 2026-07-11 — fast_locate scroll, empty-snapshot iframe hint, update-check tag parse
 - **What:** Three fixes.
