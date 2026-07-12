@@ -483,6 +483,23 @@ export async function handleLocate(relay, scout, args) {
 
   const winner = await pickLocateWinner(domTier, visionTier);
   if (winner) return winner;
+
+  // Auto-scroll on a full miss (OPT-IN, scroll:true). The DOM tier above already
+  // searched the WHOLE page (viewport:false), so scrolling gains nothing there —
+  // only the vision tier, which reads the current viewport, benefits from
+  // surfacing a below-the-fold target. Opt-in because scrolling DISMISSES open
+  // dropdowns / popovers (clicking outside them) — same rationale as handlePoint.
+  // pointOnce here always fresh-captures (no warm reuse in cloud v1), so no
+  // freshCapture opt is needed; only domFirst:false (pure vision) is passed.
+  if (args?.scroll === true) {
+    const MAX_PASSES = 4;
+    for (let pass = 0; pass < MAX_PASSES; pass++) {
+      await relay.callExtension('fast_wheel', { x: 900, y: 400, deltaY: 500 }).catch(() => {});
+      const r = await pointOnce(relay, scout, [target], args?.refine, { domFirst: false }).catch(() => null);
+      const p = r && r.points && r.points[0];
+      if (p && p.found) return { via: 'vision', xCss: Math.round(p.xCss), yCss: Math.round(p.yCss), found: true, target, scrolledTo: pass + 1 };
+    }
+  }
   return { via: null, found: false, target };
 }
 

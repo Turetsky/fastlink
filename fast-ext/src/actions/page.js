@@ -881,6 +881,26 @@ const serializeSnapshot = async (viewportOnly, opts) => {
       if (clickTexts.has(content[i].text)) content.splice(i, 1);
     }
   }
+  // Near-empty-page hint. Field feedback P2/P3/I1 (FEEDBACK_2026-06-24.md):
+  // iframed login pages (idmsa.apple.com) return footer-only snapshots and the
+  // agent wastes rounds screenshot-reading them. If the DOM yields almost nothing
+  // (not merely capped) yet the page hosts a large cross-origin iframe, the real
+  // UI is inside that iframe — steer the agent to the vision tier up front.
+  let hint;
+  if (items.length + content.length < 8 && !INDEX.capped) {
+    try {
+      for (const f of document.querySelectorAll('iframe')) {
+        let blocked = false;
+        try { blocked = !f.contentDocument; } catch { blocked = true; }
+        if (!blocked) continue;
+        const r = f.getBoundingClientRect();
+        if (r.width > 200 && r.height > 150) {
+          hint = 'page is nearly empty to DOM tools but holds a large cross-origin iframe — the real UI is likely inside it; use the vision tier (multi-target fast_point → fast_fill_vision / fast_click_xy) instead of screenshot-and-read';
+          break;
+        }
+      }
+    } catch { /* hint is best-effort */ }
+  }
   return {
     url: location.href, title: document.title,
     count: items.length, items,
@@ -889,6 +909,7 @@ const serializeSnapshot = async (viewportOnly, opts) => {
     partial: (indexPartial || INDEX.capped) || undefined,
     capped: INDEX.capped || undefined,
     snapshotTimedOut: timedOut || undefined,
+    hint: hint || undefined,
   };
 };
 

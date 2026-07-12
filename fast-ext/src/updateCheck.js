@@ -61,11 +61,12 @@ const BREAKER_MAX         = 3;                 // ≥3 self-reloads in the windo
 // hammering GitHub — only an overdue check actually hits the network.
 export const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;   // 6h
 
-// "1.2.10" -> [1, 2, 10]. Tolerates a leading "v" and junk segments.
+// "1.2.10" -> [1, 2, 10]. Tolerates an optional "ext-"/"v" tag prefix (releases
+// are tagged like "ext-v0.4.2") and junk segments.
 function parseVer(v) {
   return String(v || '')
     .trim()
-    .replace(/^v/i, '')
+    .replace(/^(ext-)?v/i, '')
     .split('.')
     .map((n) => parseInt(n, 10) || 0);
 }
@@ -110,12 +111,13 @@ async function resolveLatest() {
   // PRIMARY: GitHub Releases.
   const rel = await fetchJson(RELEASES_API, 'application/vnd.github+json');
   if (rel && rel.tag_name) {
-    return { latest: String(rel.tag_name).replace(/^v/i, ''), url: rel.html_url || RELEASES_PAGE };
+    // Tags are like "ext-v0.4.2" — strip the "ext-"/"v" prefix to a bare version.
+    return { latest: String(rel.tag_name).replace(/^(ext-)?v/i, ''), url: rel.html_url || RELEASES_PAGE };
   }
   // FALLBACK: raw manifest on main (no releases yet / rate-limited).
   const mani = await fetchJson(RAW_MANIFEST, 'application/json');
   if (mani && mani.version) {
-    return { latest: String(mani.version).replace(/^v/i, ''), url: RELEASES_PAGE };
+    return { latest: String(mani.version).replace(/^(ext-)?v/i, ''), url: RELEASES_PAGE };
   }
   return null;
 }

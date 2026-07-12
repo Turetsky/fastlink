@@ -129,14 +129,12 @@ re-validated — the field looked filled but stayed "invalid."
 **Workaround:** dispatch value-change events with `{ composed: true }` so they
 propagate across shadow boundaries.
 
-**Status: IN PROGRESS — handled by the `composedfix` agent.** That agent is
-adding `composed:true` to the value-change events across the fill/select paths in
-`fast-ext/src/actions/page.js` and syncing the tool descriptions in both
-`tools.js` files. Note the committed `fast_select_option` native-`<select>` path
-**already** dispatches `new Event('change', { bubbles: true, composed: true })`
-(see `page.js` `setOne`); composedfix is extending the same treatment to the
-remaining fill paths and documenting it. **No action needed in this work** — left
-to composedfix to avoid file collisions.
+**Status: FIXED** (in `fast-ext/src/actions/page.js`). Value-change events across
+the fill and select paths now dispatch `input`/`change` with
+`{ bubbles: true, composed: true }` (see the fill path ~lines 1238-1254 and the
+select path ~line 1540), so they propagate across shadow boundaries and outside
+validators re-run. The `fast_select_option` native-`<select>` path already did
+this via `setOne`; the treatment now covers the remaining fill paths.
 
 ---
 
@@ -158,13 +156,12 @@ By contrast, **`fast_point` already supports opt-in `scroll:true`**, which runs 
 to 4 wheel-scroll-then-relocate passes (`handlePoint`). `fast_locate` does not
 expose this.
 
-**Status: STILL OPEN (documented; small follow-up available).** Guidance for now:
-for a target you suspect is below the fold and is **not** DOM-matchable, use
-`fast_point` with `scroll:true` instead of `fast_locate`, or `fast_scroll` first
-then `fast_locate`. Optional follow-up (outside page.js/tools.js, both editable):
-add a `scroll` arg to `handleLocate` that, on a not-found vision tier, wheel-
-scrolls and re-points — mirroring `handlePoint`'s loop. Not implemented here as
-it wasn't required and `fast_point scroll:true` already covers the need.
+**Status: FIXED** (2026-07-11). `fast_locate` now takes an opt-in `scroll:true`
+arg that, on a not-found vision tier, wheel-scrolls and re-points — mirroring
+`handlePoint`'s loop. Added on the server (`handlers.js` `handleLocate` →
+`pointOnce`), the relay (`fastlink-relay/src/composite.js`), and the tool schemas
+(`fast-dxt/server/tools.js` + `fastlink-relay/tools.js`). Below-the-fold,
+visual-only targets no longer force a manual scroll-then-relocate loop.
 
 ### 4b. devicePixelRatio scaling — pixel coords read off a screenshot
 
@@ -191,8 +188,8 @@ by `dpr` (reported by `fast_screenshot`/`fast_vision_capture`).
 |---|---|---|
 | 1 | `fast_do` routes native `<select>` through click-xy → misses OS popup | **FIXED** — new `select` step → `fast_select_option` (scout.js + handlers.js) |
 | 2 | Which tools pierce closed vs open shadow roots | **DOCUMENTED** — matrix above; corrected old claim (DOM-walk reaches OPEN only, not closed) |
-| 3 | Cross-shadow validators need `composed:true` events | **IN PROGRESS** — owned by composedfix agent |
-| 4a | `fast_locate` off-viewport returns found:false | **OPEN** — use `fast_point scroll:true`; optional `handleLocate` scroll follow-up |
+| 3 | Cross-shadow validators need `composed:true` events | **FIXED** — fill/select paths dispatch `{bubbles,composed:true}` (page.js) |
+| 4a | `fast_locate` off-viewport returns found:false | **FIXED** (2026-07-11) — `fast_locate scroll:true` wheel-scrolls + re-points (handlers.js + relay + schemas) |
 | 4b | Screenshot DPR vs `fast_click_xy` CSS px | **GUIDANCE** — FastLink's vision tools already /dpr internally; only hand-read pixels need it |
 
 ### Files changed by this work

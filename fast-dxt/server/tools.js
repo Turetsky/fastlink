@@ -81,6 +81,7 @@ export const TOOLS = [
         target: { type: 'string', description: 'Plain-language description of the element to locate, e.g. "the Create button" or "the Email input box".' },
         refine: { type: 'boolean', description: 'Crop-zoom refine pass for small targets on the vision tier (default true).' },
         freshCapture: { type: 'boolean', description: 'Force the vision tier to take a new screenshot instead of reusing a recent pre-warmed one (default false).' },
+        scroll: { type: 'boolean', description: 'OPT-IN auto-scroll: if both tiers miss, wheel-scroll down and re-run the vision tier (up to 4 passes) to surface a below-the-fold target. Default FALSE. Only the vision tier gains (the DOM tier already searches the whole page). Do NOT use when a dropdown/menu/popover is open — scrolling dismisses it; reopen the menu instead. Use for long static forms with fields below the fold.' },
       },
       required: ['target'],
     },

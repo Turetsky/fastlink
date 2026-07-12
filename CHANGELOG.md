@@ -19,6 +19,67 @@ Extension changes only take effect after **syncing `fast-ext/` → `C:\Users\yjt
 
 ---
 
+## 2026-07-11 — fast_locate scroll, empty-snapshot iframe hint, update-check tag parse
+- **What:** Three fixes.
+  1. **`fast_locate` `scroll:true`** — on a not-found vision tier, wheel-scrolls
+     and re-points (up to 4 passes), mirroring `handlePoint`'s loop, so
+     below-the-fold visual-only targets no longer return `found:false`. Added on
+     the server (`handleLocate` → `pointOnce`), the relay, and both tool schemas.
+  2. **Empty-snapshot iframe hint** — `fast_snapshot` now attaches a `hint` field
+     when the result is near-empty but a large cross-origin iframe is present,
+     nudging toward the vision tier (`fast_point`/`fast_fill_vision`) instead of
+     leaving the agent to screenshot-and-read.
+  3. **Update-check tag parse** — `updateCheck.js` strips an `ext-` tag prefix so
+     `1.x` version comparisons against `ext-`-prefixed release tags don't break.
+- **Why:** aa.com finding #4a (off-viewport `fast_locate` miss); Apple-setup
+  P2/P3/I1 (near-empty snapshot didn't steer to vision); self-hosted auto-update
+  tag mismatch.
+- **Files:** `fast-dxt/server/handlers.js`, `fast-dxt/server/tools.js`,
+  `fastlink-relay/src/composite.js`, `fastlink-relay/tools.js`,
+  `fast-ext/src/actions/page.js`, `fast-ext/src/updateCheck.js`.
+- **Watch out:** `fast_locate scroll:true` is opt-in (default off) — don't make it
+  default or every locate pays the scroll cost. The snapshot `hint` is advisory
+  only; don't gate behavior on it. `updateCheck.js` tag stripping assumes the
+  `ext-` prefix scheme — revisit if the release tag format changes.
+- **Status:** committed + released as extension v0.4.3 (signed .crx +
+  `updates.xml` bumped); synced to Windows copy — needs extension reload +
+  Claude Code restart to take effect locally; relay deployed (`wrangler deploy`,
+  2026-07-12).
+
+## 2026-07-11 — issue-doc reconciliation (retroactive)
+- **What:** Verified the following against current code and closed/deleted their
+  issue docs (git history retains the deleted files):
+  - **ISSUES-2026-06-08 #1–7** — all fixed (doc self-confirmed; deleted).
+  - **BUG-1** (empty-string fill dropped) — fixed; fills now write empty strings
+    through the same path (confirmed in the BUG-2 doc's session note).
+  - **BUG-2** (batch inter-step rebind) — fixed; `settleIfNavigated` +
+    urlBefore/after detection in `runBatch` (both `fast-dxt/server/handlers.js`
+    and `fastlink-relay/src/mcp.js`), keyed off ACTUAL navigation. Doc deleted.
+  - **BUG-3** — fixed (closed alongside the batch/fill work). Doc deleted.
+  - **BUG-4** (fill_form response path) — fixed; `fast_fill_form` races `withSnap`
+    against a `HANDLER_CAP_MS=8000` hard cap, `withSnap` bounded/non-fatal
+    (`fast-ext/src/actions/page.js`). Doc deleted.
+  - **aa.com #3** — `composed:true` shipped: fill/select paths dispatch
+    `input`/`change` with `{bubbles:true, composed:true}` (`page.js`).
+  - **FEEDBACK 06-21 #1** post-action snapshot (`withSnap` → `snapshotFresh:true`)
+    + **#6** profile discoverability (`fast_profile` + `fast_status`
+    `selectedInstall`, commit `0aa05f0`).
+  - **FEEDBACK 06-24 P4** Gemini retry/backoff+OpenRouter fallback (`scout.js`);
+    **P5** `fast_type` `force`/`allowIframe` (`input.js`); **P6** `fast_screenshot`
+    `fresh` (`screenshot.js`); **P7** `fast_fill_vision` `freshCapture`-default +
+    `verifyVisionFills` read-back (`tools.js`/`handlers.js`); **P8** target-tab pin.
+- **Why:** The issue docs had drifted behind the code; this entry is the record
+  that replaces the three deleted docs (ISSUES-2026-06-08, BUG-2, BUG-4).
+- **Files:** deleted `docs/ISSUES-2026-06-08.md`,
+  `docs/BUG-2-batch-inter-step-rebind.md`, `docs/BUG-4-fill-form-response-path.md`;
+  updated `docs/FEEDBACK-aa-com-2026-06-10.md`, `FEEDBACK_2026-06-21.md`,
+  `FEEDBACK_2026-06-24.md` (reconciled status blocks).
+- **Still OPEN:** 06-21 #2 (conditional multi-step executor — batch still linear),
+  #3 (transparent auto-wake/retry), #4 (atomic hidden-radio label-targeting),
+  #5 (`fast_locate` top-N candidates); 06-24 P1 (unified "is FastLink ready?"
+  preflight across the local + relay connectors).
+- **Status:** documentation only; no code change in this entry.
+
 ## 2026-07-08 — Read-aloud widget: hidden by default, toggled from the popup
 - **What:** The read-aloud pill no longer auto-mounts on every page. It now mounts
   only when toggled on via a new "🔊 Read aloud on this page" button in the toolbar
