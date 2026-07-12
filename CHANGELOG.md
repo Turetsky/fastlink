@@ -19,6 +19,25 @@ Extension changes only take effect after **syncing `fast-ext/` → `C:\Users\yjt
 
 ---
 
+## 2026-07-12 — Launch-time fast-retry burst for broker connect (+ connect-path logging)
+- **What:** For 8s after a browser window opens or the service worker wakes
+  (`onWindowCreated` / `wake`), a failed broker dial retries every 250ms instead
+  of climbing the 1s→2s→4s→…30s backoff ladder; backoff doesn't grow during the
+  burst and any pending slow reconnect timer is cancelled so the dial happens
+  immediately. Also added sparse timestamped `[conn …]` logs (dial, open with
+  time-to-open, close, scheduled reconnect) to the SW console.
+- **Why:** Cold Chrome launch felt like "FastLink doesn't realize Chrome is up
+  until ~5s later" — the first dial races the broker warm-up, fails, and then
+  eats 1s+2s+4s of backoff before reconnecting.
+- **Files:** `fast-ext/src/connection.js`.
+- **Watch out:** the burst must NOT override the slot-busy cooldown (it doesn't —
+  `connect()` checks `slotBusyUntil` before dialing, and `onSlotBusy` pins
+  `backoffMs` to max, which only matters after the 8s window anyway). Steady-state
+  failure pacing (broker truly down) is unchanged outside the burst window.
+- **Status:** committed; verified live 2026-07-12 — after extension reload and a
+  full Chrome quit/relaunch, the extension attached immediately on launch
+  (single clean connection, no backoff churn in totalConnections).
+
 ## 2026-07-11 — fast_locate scroll, empty-snapshot iframe hint, update-check tag parse
 - **What:** Three fixes.
   1. **`fast_locate` `scroll:true`** — on a not-found vision tier, wheel-scrolls

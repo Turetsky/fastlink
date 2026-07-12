@@ -46,6 +46,14 @@ const PING_MS = 20_000;
 // 30s for the next alarm tick. Reset to the floor on every healthy open.
 const BACKOFF_MIN_MS = 1_000;
 const BACKOFF_MAX_MS = 30_000;
+// Launch burst: for a short window after a browser window opens (or the worker
+// wakes at startup), a failed dial retries every 250ms instead of climbing the
+// backoff ladder. A cold Chrome launch otherwise eats 1s+2s+4s of backoff while
+// the broker finishes warming — felt as "extension connects ~5s after launch".
+// Backoff is not grown during the burst, so steady-state failure behavior
+// (broker truly down) is unchanged once the window closes.
+const FAST_RETRY_WINDOW_MS = 8_000;
+const FAST_RETRY_GAP_MS = 250;
 // When the broker reports this slot is already held by another live profile
 // ({type:'slotBusy'}), don't war over it — sit out this long before re-dialing,
 // re-checking each cycle whether the other profile has freed the slot. Without
@@ -85,6 +93,7 @@ let lastDialOpened = true;    // did the previous dial ever reach OPEN? (true in
 let pingTimer = null;
 let reconnectTimer = null;
 let backoffMs = BACKOFF_MIN_MS;
+let fastRetryUntil = 0;       // launch-burst deadline; failed dials retry fast until then
 let connectStartedAt = 0;     // when the current socket entered CONNECTING
 let lastRxTs = 0;             // last inbound frame (proof the path is alive)
 let pongCapable = false;      // broker has echoed at least one {pong:true}
@@ -112,14 +121,19 @@ export function startConnection(handle, opts = {}) {
   return {
     // Every alarm tick: prune a zombie socket, then (re)connect if needed.
     onAlarm: (a) => { if (a && a.name === RECONNECT_ALARM) { checkHealth(); connect(); } },
-    onWindowCreated: () => { ensureAlarm(); connect(); },
+    onWindowCreated: () => { beginFastRetry(); ensureAlarm(); connect(); },
     onWindowRemoved: () => disconnectIfIdle(),
     // Generic "the worker just woke" hook (onStartup/onInstalled): re-arm the
     // alarm and reconnect the previously-active transport.
-    wake: () => { ensureAlarm(); checkHealth(); connect(); },
+    wake: () => { beginFastRetry(); ensureAlarm(); checkHealth(); connect(); },
     sendEvent,
   };
 }
+
+// Timestamped connect-path log (service-worker console) — kept sparse: dial,
+// open (with time-to-open), close, and each scheduled reconnect. Enough to
+// read the launch timeline without spamming steady-state pings.
+const clog = (...a) => console.log(`[conn ${new Date().toISOString()}]`, ...a);
 
 async function connect() {
   if (socket && socket.readyState === WebSocket.OPEN) return;
@@ -149,9 +163,11 @@ async function connect() {
   catch { scheduleReconnect(); return; }
   socket = ws;
   connectStartedAt = Date.now();
+  clog(`dialing ${HOSTS[hostIdx]}:${currentPort()} (slot ${installId})`);
   setLocalState('connecting');
   // Stay red until the broker pushes the actual client count after handshake.
   ws.onopen = () => {
+    clog(`open after ${Date.now() - connectStartedAt}ms`);
     lastDialOpened = true;                             // this host works — keep dialing it
     backoffMs = BACKOFF_MIN_MS;                        // healthy connection — reset backoff
     lastRxTs = Date.now();
@@ -162,6 +178,7 @@ async function connect() {
   ws.onclose = () => {
     stopPingLoop();
     if (socket !== ws) return;     // superseded / deliberately recycled — its replacement is live
+    clog('closed');
     socket = null;
     setBadgeForCount(0);
     scheduleReconnect();
@@ -200,10 +217,19 @@ function checkHealth() {
 
 function scheduleReconnect() {
   if (reconnectTimer) return;                          // a reconnect is already pending
-  const delay = backoffMs;
-  backoffMs = Math.min(backoffMs * 2, BACKOFF_MAX_MS);
+  const fast = Date.now() < fastRetryUntil;
+  const delay = fast ? FAST_RETRY_GAP_MS : backoffMs;
+  if (!fast) backoffMs = Math.min(backoffMs * 2, BACKOFF_MAX_MS);
+  clog(`reconnect in ${delay}ms${fast ? ' (launch burst)' : ''}`);
   setLocalState('connecting');
   reconnectTimer = setTimeout(() => { reconnectTimer = null; connect(); }, delay);
+}
+
+// Arm the launch burst and cancel any pending slow reconnect so the caller's
+// connect() dials immediately instead of waiting out a stale backoff delay.
+function beginFastRetry() {
+  fastRetryUntil = Date.now() + FAST_RETRY_WINDOW_MS;
+  if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
 }
 
 async function disconnectIfIdle() {
